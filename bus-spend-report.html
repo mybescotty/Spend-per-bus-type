@@ -88,6 +88,12 @@ details.diag[open] summary { border-bottom: 1px solid #e2e8f0; border-radius: 6p
 .diag-stat { display: inline-block; margin-right: 16px; font-size: 0.82rem; }
 .diag-stat strong { color: #1a1a2e; }
 
+.depot-bar { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+.depot-label { font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: #374151; white-space: nowrap; }
+.depot-row td { background: #eef4ff; font-style: italic; }
+.depot-row td:first-child { padding-left: 30px; color: #374151; }
+.depot-row:hover td { background: #dceeff; }
+
 .fleet-lines { display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px; }
 .fleet-line { display: flex; align-items: center; gap: 10px; }
 .fleet-line select { min-width: 220px; flex: 0 0 auto; }
@@ -144,6 +150,10 @@ details.diag[open] summary { border-bottom: 1px solid #e2e8f0; border-radius: 6p
   <div class="card hidden" id="summaryCard">
     <h2>Average Annual Spend Per Bus</h2>
     <p class="subtitle" id="summarySubtitle"></p>
+    <div class="depot-bar hidden" id="depotBar">
+      <label class="depot-label" for="depotFilter">Depot filter:</label>
+      <select id="depotFilter"><option value="">All Depots</option></select>
+    </div>
     <div class="table-wrap" id="tableWrap"></div>
   </div>
 
@@ -228,19 +238,27 @@ function readDataFile(file) {
 function buildFleetMap(rows) {
   if (rows.length < 2) throw new Error('Fleet file appears empty.');
   const headers = rows[0].map(h => h.toLowerCase().replace(/\s+/g, ''));
-  const numIdx  = headers.findIndex(h => h.includes('fleetnumber') || h.includes('fleet'));
-  const typeIdx = headers.findIndex(h => h.includes('chassis') || h.includes('variant') || h.includes('type') || h.includes('bus'));
+  const numIdx   = headers.findIndex(h => h.includes('fleetnumber') || h.includes('fleet'));
+  const typeIdx  = headers.findIndex(h => h.includes('chassis') || h.includes('variant'));
+  const depotIdx = headers.findIndex(h => h === 'depot');
+  const plantIdx = headers.findIndex(h => h.includes('sapplant') || (h.includes('plant') && h.includes('desc')));
   if (numIdx  === -1) throw new Error(`Fleet file: cannot find fleet number column. Headers found: ${rows[0].join(', ')}`);
   if (typeIdx === -1) throw new Error(`Fleet file: cannot find chassis/variant column. Headers found: ${rows[0].join(', ')}`);
   const map = new Map();
+  const depotNames = new Map();
   for (let i = 1; i < rows.length; i++) {
     const row = rows[i];
-    const num  = (row[numIdx]  || '').trim();
-    const type = (row[typeIdx] || '').trim();
-    if (num && type) map.set(num, type);
+    const num   = (row[numIdx]  || '').trim();
+    const type  = (row[typeIdx] || '').trim();
+    const depot = depotIdx >= 0 ? (row[depotIdx] || '').trim() : '';
+    const plant = plantIdx >= 0 ? (row[plantIdx] || '').trim() : '';
+    if (num && type) {
+      map.set(num, { busType: type, depot });
+      if (depot) depotNames.set(depot, plant || depot);
+    }
   }
   if (map.size === 0) throw new Error('Fleet file: no data rows found after the header.');
-  return map;
+  return { map, depotNames };
 }
 
 function processSpend(spendRows, fleetMap) {
@@ -256,7 +274,7 @@ function processSpend(spendRows, fleetMap) {
   if (plIdx    === -1) throw new Error('Spend file: "PLImpact" column not found.');
   if (valIdx   === -1) throw new Error('Spend file: "TransactionValue" column not found.');
 
-  const busData = {};
+  const busData = {}, depotBusData = {};
   let matched = 0, skippedNoFleet = 0, skippedNoGroup = 0;
 
   for (let i = 1; i < spendRows.length; i++) {
@@ -267,7 +285,9 @@ function processSpend(spendRows, fleetMap) {
 
     if (!fleetNum || isNaN(plCode) || isNaN(value)) { skippedNoFleet++; continue; }
 
-    const busType = fleetMap.get(fleetNum);
+    const entry   = fleetMap.get(fleetNum);
+    const busType = entry ? entry.busType : undefined;
+    const depot   = entry ? entry.depot   : '';
     const group   = CODE_TO_GROUP[plCode];
 
     if (!busType) { skippedNoGroup++; continue; }
@@ -276,6 +296,13 @@ function processSpend(spendRows, fleetMap) {
     if (!busData[busType])           busData[busType] = {};
     if (!busData[busType][fleetNum]) busData[busType][fleetNum] = {};
     busData[busType][fleetNum][group] = (busData[busType][fleetNum][group] || 0) + value;
+
+    if (depot) {
+      if (!depotBusData[busType])                    depotBusData[busType] = {};
+      if (!depotBusData[busType][depot])              depotBusData[busType][depot] = {};
+      if (!depotBusData[busType][depot][fleetNum])    depotBusData[busType][depot][fleetNum] = {};
+      depotBusData[busType][depot][fleetNum][group] = (depotBusData[busType][depot][fleetNum][group] || 0) + value;
+    }
     matched++;
   }
 
@@ -287,13 +314,26 @@ function processSpend(spendRows, fleetMap) {
   for (const [busType, buses] of Object.entries(busData)) {
     const busNums = Object.keys(buses);
     const n = busNums.length;
-    averages[busType] = { _count: n };
+    averages[busType] = { _count: n, _depots: {} };
     for (const group of GROUP_NAMES) {
       const total = busNums.reduce((s, bn) => s + (buses[bn][group] || 0), 0);
       averages[busType][group] = total / n;
     }
     averages[busType]._total = GROUP_NAMES.reduce((s, g) => s + averages[busType][g], 0);
   }
+
+  for (const [busType, depots] of Object.entries(depotBusData)) {
+    if (!averages[busType]) continue;
+    for (const [depot, buses] of Object.entries(depots)) {
+      const nums = Object.keys(buses), n = nums.length;
+      averages[busType]._depots[depot] = { _count: n };
+      for (const g of GROUP_NAMES) {
+        averages[busType]._depots[depot][g] = nums.reduce((s, bn) => s + (buses[bn][g] || 0), 0) / n;
+      }
+      averages[busType]._depots[depot]._total = GROUP_NAMES.reduce((s, g) => s + averages[busType]._depots[depot][g], 0);
+    }
+  }
+
   return { averages, matched, skippedNoFleet, skippedNoGroup };
 }
 </script>
@@ -303,8 +343,11 @@ const fmt = v => {
   return (v < 0 ? '-' : '') + '£' + abs;
 };
 
-function renderTable(averages) {
-  const types = Object.keys(averages).sort();
+function renderTable(averages, selectedDepot = '') {
+  const depotName = selectedDepot ? (_depotNames.get(selectedDepot) || selectedDepot) : '';
+  const types = Object.keys(averages).sort()
+    .filter(t => !selectedDepot || averages[t]._depots[selectedDepot]);
+
   let html = '<table><thead><tr>'
     + '<th>Bus Type</th><th>Buses in Sample</th>'
     + GROUP_NAMES.map(g => `<th>${g}</th>`).join('')
@@ -315,18 +358,35 @@ function renderTable(averages) {
     html += `<tr><td>${t}</td><td>${d._count}</td>`
       + GROUP_NAMES.map(g => `<td>${fmt(d[g])}</td>`).join('')
       + `<td><strong>${fmt(d._total)}</strong></td></tr>`;
+
+    if (selectedDepot && d._depots[selectedDepot]) {
+      const dd = d._depots[selectedDepot];
+      html += `<tr class="depot-row"><td>${t} <em style="font-size:0.74rem;color:#6b7280">— ${depotName}</em></td><td>${dd._count}</td>`
+        + GROUP_NAMES.map(g => `<td>${fmt(dd[g])}</td>`).join('')
+        + `<td><strong>${fmt(dd._total)}</strong></td></tr>`;
+    }
   }
 
-  const totalBuses = types.reduce((s, t) => s + averages[t]._count, 0);
-  const grandGroup = GROUP_NAMES.map(g => {
-    const wtd = types.reduce((s, t) => s + averages[t][g] * averages[t]._count, 0);
-    return wtd / totalBuses;
-  });
+  const grandBuses = types.reduce((s, t) => s + averages[t]._count, 0);
+  const grandGroup = GROUP_NAMES.map(g =>
+    types.reduce((s, t) => s + averages[t][g] * averages[t]._count, 0) / grandBuses);
   const grandTotal = grandGroup.reduce((s, v) => s + v, 0);
-
-  html += `<tr class="grand-row"><td>Fleet Average</td><td>${totalBuses}</td>`
+  html += `<tr class="grand-row"><td>Fleet Average</td><td>${grandBuses}</td>`
     + grandGroup.map(v => `<td>${fmt(v)}</td>`).join('')
     + `<td><strong>${fmt(grandTotal)}</strong></td></tr>`;
+
+  if (selectedDepot) {
+    const dTypes = types.filter(t => averages[t]._depots[selectedDepot]);
+    const dBuses = dTypes.reduce((s, t) => s + averages[t]._depots[selectedDepot]._count, 0);
+    if (dBuses > 0) {
+      const dGroup = GROUP_NAMES.map(g =>
+        dTypes.reduce((s, t) => s + averages[t]._depots[selectedDepot][g] * averages[t]._depots[selectedDepot]._count, 0) / dBuses);
+      const dTotal = dGroup.reduce((s, v) => s + v, 0);
+      html += `<tr class="grand-row depot-row"><td>${depotName} Average</td><td>${dBuses}</td>`
+        + dGroup.map(v => `<td>${fmt(v)}</td>`).join('')
+        + `<td><strong>${fmt(dTotal)}</strong></td></tr>`;
+    }
+  }
 
   html += '</tbody></table>';
   document.getElementById('tableWrap').innerHTML = html;
@@ -407,7 +467,7 @@ function renderFleetBudget() {
   result.classList.remove('hidden');
 }
 
-let _averages = null;
+let _averages = null, _depotNames = new Map();
 
 function setStatus(msg, cls = '') {
   const el = document.getElementById('status');
@@ -447,9 +507,10 @@ document.getElementById('processBtn').addEventListener('click', async () => {
     const spendRows = spendResult.rows;
     const fleetRows = fleetResult.rows;
     setStatus('Processing…', 'loading');
-    const fleetMap  = buildFleetMap(fleetRows);
+    const { map: fleetMap, depotNames } = buildFleetMap(fleetRows);
     const { averages, matched, skippedNoFleet, skippedNoGroup } = processSpend(spendRows, fleetMap);
     _averages = averages;
+    _depotNames = depotNames;
 
     renderDiagnostics(spendResult, fleetResult, spendRows, { matched, skippedNoFleet, skippedNoGroup });
 
@@ -457,7 +518,15 @@ document.getElementById('processBtn').addEventListener('click', async () => {
     document.getElementById('summarySubtitle').textContent =
       `${typeCount} bus type${typeCount !== 1 ? 's' : ''} · ${fleetMap.size.toLocaleString()} vehicles in fleet file · ${matched.toLocaleString()} spend lines matched`;
 
-    renderTable(averages);
+    const depotSel = document.getElementById('depotFilter');
+    depotSel.innerHTML = '<option value="">All Depots</option>';
+    [...depotNames.entries()].sort((a, b) => a[1].localeCompare(b[1])).forEach(([code, name]) => {
+      const o = document.createElement('option'); o.value = code; o.textContent = name;
+      depotSel.appendChild(o);
+    });
+    if (depotNames.size > 0) document.getElementById('depotBar').classList.remove('hidden');
+
+    renderTable(averages, '');
     if (document.querySelectorAll('#fleetLines .fleet-line').length === 0) {
       addFleetLine();
     } else {
@@ -490,6 +559,9 @@ document.getElementById('processBtn').addEventListener('click', async () => {
 });
 
 document.getElementById('addLineBtn').addEventListener('click', addFleetLine);
+document.getElementById('depotFilter').addEventListener('change', () => {
+  if (_averages) renderTable(_averages, document.getElementById('depotFilter').value);
+});
 
 function renderDiagnostics(spendResult, fleetResult, spendRows, stats) {
   const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
