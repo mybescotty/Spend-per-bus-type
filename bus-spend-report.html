@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bus Type Spend Report</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f0f2f5; color: #1a1a2e; min-height: 100vh; }
+
+.header { background: #1a1a2e; color: white; padding: 20px 32px; border-bottom: 3px solid #4a90d9; }
+.header h1 { font-size: 1.4rem; font-weight: 700; letter-spacing: -0.02em; }
+.header p { font-size: 0.82rem; color: #8892b0; margin-top: 4px; }
+
+.main { max-width: 1400px; margin: 0 auto; padding: 24px 32px; }
+
+.card { background: white; border-radius: 10px; padding: 24px; margin-bottom: 24px; box-shadow: 0 1px 4px rgba(0,0,0,0.08); }
+.card h2 { font-size: 0.95rem; font-weight: 700; margin-bottom: 16px; color: #1a1a2e; text-transform: uppercase; letter-spacing: 0.05em; }
+
+.upload-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 20px; }
+.upload-box { border: 2px dashed #c8d0e0; border-radius: 8px; padding: 24px 20px; text-align: center; transition: all 0.2s; }
+.upload-box label { display: block; cursor: pointer; }
+.upload-box input[type=file] { display: none; }
+.upload-box .icon { font-size: 2.2rem; margin-bottom: 10px; }
+.upload-box .title { font-weight: 600; font-size: 0.9rem; margin-bottom: 4px; }
+.upload-box .hint { font-size: 0.76rem; color: #6b7280; line-height: 1.5; }
+.upload-box .filename { font-size: 0.8rem; color: #4a90d9; margin-top: 8px; font-weight: 600; }
+.upload-box.has-file { border-color: #4a90d9; background: #f5f9ff; }
+.upload-box:not(.has-file):hover { border-color: #9ca3af; }
+
+.btn { background: #1a1a2e; color: white; border: none; padding: 10px 28px; border-radius: 6px; font-size: 0.88rem; font-weight: 600; cursor: pointer; transition: background 0.2s; letter-spacing: 0.02em; }
+.btn:hover:not(:disabled) { background: #2d2d4e; }
+.btn:disabled { background: #9ca3af; cursor: not-allowed; }
+.btn.secondary { background: #4a90d9; }
+.btn.secondary:hover:not(:disabled) { background: #3a7bc8; }
+
+.status { font-size: 0.82rem; color: #6b7280; margin-top: 12px; padding: 8px 0; }
+.status.error { color: #dc2626; }
+.status.success { color: #059669; }
+.status.loading { color: #d97706; }
+
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 0.83rem; }
+thead th { background: #1a1a2e; color: white; padding: 10px 14px; text-align: right; white-space: nowrap; font-weight: 600; }
+thead th:first-child, thead th:nth-child(2) { text-align: left; }
+td { padding: 9px 14px; border-bottom: 1px solid #f0f2f5; text-align: right; }
+td:first-child { text-align: left; font-weight: 600; }
+td:nth-child(2) { text-align: center; color: #6b7280; }
+tr:hover td { background: #f9fafb; }
+.grand-row td { background: #f0f2f5; font-weight: 700; border-top: 2px solid #c8d0e0; color: #1a1a2e; }
+.grand-row:hover td { background: #e8ecf0; }
+
+.budget-controls { display: flex; gap: 16px; align-items: flex-end; margin-bottom: 24px; flex-wrap: wrap; }
+.field { display: flex; flex-direction: column; gap: 5px; }
+.field label { font-size: 0.75rem; font-weight: 700; color: #374151; text-transform: uppercase; letter-spacing: 0.06em; }
+select, input[type=number] { padding: 9px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 0.88rem; min-width: 200px; background: white; color: #1a1a2e; }
+select:focus, input[type=number]:focus { outline: 2px solid #4a90d9; border-color: transparent; }
+
+.budget-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(195px, 1fr)); gap: 14px; }
+.budget-card { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 18px; }
+.budget-card .g-name { font-size: 0.72rem; font-weight: 700; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 10px; }
+.budget-card .amount { font-size: 1.35rem; font-weight: 700; color: #1a1a2e; }
+.budget-card .per-bus { font-size: 0.74rem; color: #9ca3af; margin-top: 5px; }
+.budget-card.total-card { background: #1a1a2e; border-color: #1a1a2e; grid-column: 1 / -1; display: flex; align-items: center; gap: 24px; }
+.budget-card.total-card .g-name { color: #8892b0; margin: 0; font-size: 0.8rem; white-space: nowrap; }
+.budget-card.total-card .amount { color: white; font-size: 2rem; }
+.budget-card.total-card .per-bus { color: #8892b0; margin-top: 2px; }
+
+.hidden { display: none !important; }
+.subtitle { font-size: 0.8rem; color: #6b7280; margin-bottom: 16px; }
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>Bus Type Spend Report</h1>
+  <p>Average annual spend per bus &mdash; by chassis type and cost category</p>
+</div>
+<div class="main">
+
+  <div class="card">
+    <h2>Upload Data</h2>
+    <div class="upload-grid">
+      <div class="upload-box" id="spendBox">
+        <label for="spendFile">
+          <div class="icon">📊</div>
+          <div class="title">Spend Data CSV</div>
+          <div class="hint">One full year of transactions<br>Needs: FleetNumber, PLImpact, TransactionValue</div>
+          <div class="filename" id="spendName">Click to select file</div>
+          <input type="file" id="spendFile" accept=".csv,.CSV">
+        </label>
+      </div>
+      <div class="upload-box" id="fleetBox">
+        <label for="fleetFile">
+          <div class="icon">🚌</div>
+          <div class="title">Fleet File CSV</div>
+          <div class="hint">Fleet Number &rarr; Chassis Variant<br>Two columns, headers required</div>
+          <div class="filename" id="fleetName">Click to select file</div>
+          <input type="file" id="fleetFile" accept=".csv,.CSV">
+        </label>
+      </div>
+    </div>
+    <button class="btn" id="processBtn" disabled>Generate Report</button>
+    <div class="status" id="status">Upload both files to continue.</div>
+  </div>
+
+  <div class="card hidden" id="summaryCard">
+    <h2>Average Annual Spend Per Bus</h2>
+    <p class="subtitle" id="summarySubtitle"></p>
+    <div class="table-wrap" id="tableWrap"></div>
+  </div>
+
+  <div class="card hidden" id="budgetCard">
+    <h2>Budget Calculator</h2>
+    <p class="subtitle">Select a bus type and quantity to project next year&rsquo;s budget based on run-rate averages.</p>
+    <div class="budget-controls">
+      <div class="field">
+        <label for="busTypeSelect">Bus Type</label>
+        <select id="busTypeSelect"></select>
+      </div>
+      <div class="field">
+        <label for="busCount">Number of Buses</label>
+        <input type="number" id="busCount" value="1" min="1" max="9999" step="1">
+      </div>
+    </div>
+    <div class="budget-cards hidden" id="budgetCards"></div>
+  </div>
+
+</div>
+<script>
+const SPEND_GROUPS = {
+  'Store Materials':        [331010, 331011, 331015, 331016],
+  'Major Units':            [331020, 331021],
+  '3rd Party Maintenance':  [331018],
+  'Lubricants':             [331030],
+  'Vehicle Tow & Recovery': [331041],
+};
+
+const CODE_TO_GROUP = {};
+for (const [group, codes] of Object.entries(SPEND_GROUPS)) {
+  for (const code of codes) CODE_TO_GROUP[code] = group;
+}
+const GROUP_NAMES = Object.keys(SPEND_GROUPS);
+
+function parseCSV(text) {
+  const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+  const result = [];
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    const row = [];
+    let cur = '', inQuote = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (ch === '"') {
+        if (inQuote && line[i + 1] === '"') { cur += '"'; i++; }
+        else inQuote = !inQuote;
+      } else if (ch === ',' && !inQuote) {
+        row.push(cur.trim()); cur = '';
+      } else {
+        cur += ch;
+      }
+    }
+    row.push(cur.trim());
+    result.push(row);
+  }
+  return result;
+}
+
+function buildFleetMap(rows) {
+  if (rows.length < 2) throw new Error('Fleet file appears empty.');
+  const headers = rows[0].map(h => h.toLowerCase().replace(/\s+/g, ''));
+  const numIdx  = headers.findIndex(h => h.includes('fleetnumber') || h.includes('fleet'));
+  const typeIdx = headers.findIndex(h => h.includes('chassis') || h.includes('variant') || h.includes('type') || h.includes('bus'));
+  if (numIdx  === -1) throw new Error(`Fleet file: cannot find fleet number column. Headers found: ${rows[0].join(', ')}`);
+  if (typeIdx === -1) throw new Error(`Fleet file: cannot find chassis/variant column. Headers found: ${rows[0].join(', ')}`);
+  const map = new Map();
+  for (let i = 1; i < rows.length; i++) {
+    const row = rows[i];
+    const num  = (row[numIdx]  || '').trim();
+    const type = (row[typeIdx] || '').trim();
+    if (num && type) map.set(num, type);
+  }
+  if (map.size === 0) throw new Error('Fleet file: no data rows found after the header.');
+  return map;
+}
+
+function processSpend(spendRows, fleetMap) {
+  if (spendRows.length < 2) throw new Error('Spend file appears empty.');
+  const headers = spendRows[0].map(h => h.trim());
+  const hi = name => headers.findIndex(h => h.toLowerCase() === name.toLowerCase());
+
+  const fleetIdx = hi('FleetNumber');
+  const plIdx    = hi('PLImpact');
+  const valIdx   = hi('TransactionValue');
+
+  if (fleetIdx === -1) throw new Error(`Spend file: "FleetNumber" column not found. Check header row. Columns seen: ${headers.slice(0,5).join(', ')}...`);
+  if (plIdx    === -1) throw new Error('Spend file: "PLImpact" column not found.');
+  if (valIdx   === -1) throw new Error('Spend file: "TransactionValue" column not found.');
+
+  const busData = {};
+  let matched = 0, skippedNoFleet = 0, skippedNoGroup = 0;
+
+  for (let i = 1; i < spendRows.length; i++) {
+    const row = spendRows[i];
+    const fleetNum = (row[fleetIdx] || '').trim();
+    const plCode   = parseInt(row[plIdx],  10);
+    const value    = parseFloat(row[valIdx]);
+
+    if (!fleetNum || isNaN(plCode) || isNaN(value)) { skippedNoFleet++; continue; }
+
+    const busType = fleetMap.get(fleetNum);
+    const group   = CODE_TO_GROUP[plCode];
+
+    if (!busType) { skippedNoGroup++; continue; }
+    if (!group)   { continue; }
+
+    if (!busData[busType])           busData[busType] = {};
+    if (!busData[busType][fleetNum]) busData[busType][fleetNum] = {};
+    busData[busType][fleetNum][group] = (busData[busType][fleetNum][group] || 0) + value;
+    matched++;
+  }
+
+  if (Object.keys(busData).length === 0) {
+    throw new Error(`No matched transactions. ${skippedNoFleet} rows had missing fleet/value. ${skippedNoGroup} fleet numbers not in fleet file. Check both files use the same fleet number format.`);
+  }
+
+  const averages = {};
+  for (const [busType, buses] of Object.entries(busData)) {
+    const busNums = Object.keys(buses);
+    const n = busNums.length;
+    averages[busType] = { _count: n };
+    for (const group of GROUP_NAMES) {
+      const total = busNums.reduce((s, bn) => s + (buses[bn][group] || 0), 0);
+      averages[busType][group] = total / n;
+    }
+    averages[busType]._total = GROUP_NAMES.reduce((s, g) => s + averages[busType][g], 0);
+  }
+  return { averages, matched, skippedNoFleet, skippedNoGroup };
+}
+</script>
+<script>
+const fmt = v => {
+  const abs = Math.abs(v).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return (v < 0 ? '-' : '') + '£' + abs;
+};
+
+function renderTable(averages) {
+  const types = Object.keys(averages).sort();
+  let html = '<table><thead><tr>'
+    + '<th>Bus Type</th><th>Buses in Sample</th>'
+    + GROUP_NAMES.map(g => `<th>${g}</th>`).join('')
+    + '<th>Total per Bus</th></tr></thead><tbody>';
+
+  for (const t of types) {
+    const d = averages[t];
+    html += `<tr><td>${t}</td><td>${d._count}</td>`
+      + GROUP_NAMES.map(g => `<td>${fmt(d[g])}</td>`).join('')
+      + `<td><strong>${fmt(d._total)}</strong></td></tr>`;
+  }
+
+  const totalBuses = types.reduce((s, t) => s + averages[t]._count, 0);
+  const grandGroup = GROUP_NAMES.map(g => {
+    const wtd = types.reduce((s, t) => s + averages[t][g] * averages[t]._count, 0);
+    return wtd / totalBuses;
+  });
+  const grandTotal = grandGroup.reduce((s, v) => s + v, 0);
+
+  html += `<tr class="grand-row"><td>Fleet Average</td><td>${totalBuses}</td>`
+    + grandGroup.map(v => `<td>${fmt(v)}</td>`).join('')
+    + `<td><strong>${fmt(grandTotal)}</strong></td></tr>`;
+
+  html += '</tbody></table>';
+  document.getElementById('tableWrap').innerHTML = html;
+}
+
+function populateSelect(averages) {
+  const sel = document.getElementById('busTypeSelect');
+  sel.innerHTML = Object.keys(averages).sort()
+    .map(t => `<option value="${t}">${t} (${averages[t]._count} bus${averages[t]._count !== 1 ? 'es' : ''})</option>`)
+    .join('');
+}
+
+function renderBudget(averages) {
+  const raw = document.getElementById('busTypeSelect').value;
+  const busType = raw.replace(/ \(\d+ buses?\)$/, '').trim();
+  const count   = Math.max(1, parseInt(document.getElementById('busCount').value, 10) || 1);
+  const d = averages[busType];
+  if (!d) return;
+
+  const cards = document.getElementById('budgetCards');
+  let html = GROUP_NAMES.map(g => `
+    <div class="budget-card">
+      <div class="g-name">${g}</div>
+      <div class="amount">${fmt(d[g] * count)}</div>
+      <div class="per-bus">${fmt(d[g])} avg/bus &times; ${count}</div>
+    </div>`).join('');
+
+  html += `<div class="budget-card total-card">
+    <div>
+      <div class="g-name">Total Budget &mdash; ${busType}</div>
+      <div class="amount">${fmt(d._total * count)}</div>
+      <div class="per-bus">${fmt(d._total)} avg/bus &times; ${count} bus${count !== 1 ? 'es' : ''}</div>
+    </div>
+  </div>`;
+
+  cards.innerHTML = html;
+  cards.classList.remove('hidden');
+}
+
+let _averages = null;
+
+function setStatus(msg, cls = '') {
+  const el = document.getElementById('status');
+  el.textContent = msg;
+  el.className = 'status ' + cls;
+}
+
+function checkReady() {
+  document.getElementById('processBtn').disabled = !(_spendFile && _fleetFile);
+  if (_spendFile && _fleetFile) setStatus('Both files loaded. Click Generate Report.', '');
+}
+
+let _spendFile = null, _fleetFile = null;
+
+document.getElementById('spendFile').addEventListener('change', e => {
+  _spendFile = e.target.files[0] || null;
+  const nameEl = document.getElementById('spendName');
+  nameEl.textContent = _spendFile ? _spendFile.name : 'Click to select file';
+  document.getElementById('spendBox').classList.toggle('has-file', !!_spendFile);
+  checkReady();
+});
+
+document.getElementById('fleetFile').addEventListener('change', e => {
+  _fleetFile = e.target.files[0] || null;
+  const nameEl = document.getElementById('fleetName');
+  nameEl.textContent = _fleetFile ? _fleetFile.name : 'Click to select file';
+  document.getElementById('fleetBox').classList.toggle('has-file', !!_fleetFile);
+  checkReady();
+});
+
+document.getElementById('processBtn').addEventListener('click', async () => {
+  setStatus('Reading files…', 'loading');
+  document.getElementById('processBtn').disabled = true;
+  try {
+    const readText = f => new Promise((res, rej) => {
+      const r = new FileReader();
+      r.onload = e => res(e.target.result);
+      r.onerror = rej;
+      r.readAsText(f);
+    });
+    const [spendText, fleetText] = await Promise.all([readText(_spendFile), readText(_fleetFile)]);
+    setStatus('Parsing…', 'loading');
+    const fleetRows = parseCSV(fleetText);
+    const spendRows = parseCSV(spendText);
+    const fleetMap  = buildFleetMap(fleetRows);
+    const { averages, matched, skippedNoFleet, skippedNoGroup } = processSpend(spendRows, fleetMap);
+    _averages = averages;
+
+    const typeCount = Object.keys(averages).length;
+    document.getElementById('summarySubtitle').textContent =
+      `${typeCount} bus type${typeCount !== 1 ? 's' : ''} · ${fleetMap.size.toLocaleString()} vehicles in fleet file · ${matched.toLocaleString()} spend lines matched`;
+
+    renderTable(averages);
+    populateSelect(averages);
+    renderBudget(averages);
+
+    document.getElementById('summaryCard').classList.remove('hidden');
+    document.getElementById('budgetCard').classList.remove('hidden');
+    document.getElementById('summaryCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+    const warn = skippedNoGroup > 0 ? ` (${skippedNoGroup.toLocaleString()} fleet numbers not in fleet file — check both files match)` : '';
+    setStatus(`Done — ${typeCount} bus type${typeCount !== 1 ? 's' : ''} found.${warn}`, 'success');
+  } catch (err) {
+    setStatus('Error: ' + err.message, 'error');
+    console.error(err);
+  } finally {
+    document.getElementById('processBtn').disabled = false;
+  }
+});
+
+document.getElementById('busTypeSelect').addEventListener('change', () => { if (_averages) renderBudget(_averages); });
+document.getElementById('busCount').addEventListener('input',  () => { if (_averages) renderBudget(_averages); });
+</script>
+</body>
+</html>
