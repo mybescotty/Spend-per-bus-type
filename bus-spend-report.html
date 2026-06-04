@@ -87,6 +87,19 @@ details.diag[open] summary { border-bottom: 1px solid #e2e8f0; border-radius: 6p
 .col-missing { color: #dc2626; font-weight: 600; }
 .diag-stat { display: inline-block; margin-right: 16px; font-size: 0.82rem; }
 .diag-stat strong { color: #1a1a2e; }
+
+.fleet-lines { display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px; }
+.fleet-line { display: flex; align-items: center; gap: 10px; }
+.fleet-line select { min-width: 220px; flex: 0 0 auto; }
+.fleet-line input[type=number] { min-width: 90px; width: 90px; flex: 0 0 auto; }
+.fleet-line .line-label { font-size: 0.82rem; color: #6b7280; }
+.remove-btn { background: none; border: 1px solid #e2e8f0; color: #9ca3af; border-radius: 4px; width: 28px; height: 28px; cursor: pointer; font-size: 1.1rem; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.remove-btn:hover { border-color: #dc2626; color: #dc2626; background: #fff5f5; }
+.add-line-btn { background: none; border: 1px dashed #c8d0e0; color: #4a90d9; border-radius: 6px; padding: 8px 16px; font-size: 0.85rem; font-weight: 600; cursor: pointer; transition: all 0.2s; }
+.add-line-btn:hover { border-color: #4a90d9; background: #f5f9ff; }
+.budget-table td.total-col { font-weight: 700; background: #f8fafc; }
+.budget-table tr.total-row td { background: #1a1a2e; color: white; font-weight: 700; }
+.budget-table tr.total-row td.total-col { background: #111827; }
 </style>
 <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
 </head>
@@ -136,18 +149,10 @@ details.diag[open] summary { border-bottom: 1px solid #e2e8f0; border-radius: 6p
 
   <div class="card hidden" id="budgetCard">
     <h2>Budget Calculator</h2>
-    <p class="subtitle">Select a bus type and quantity to project next year&rsquo;s budget based on run-rate averages.</p>
-    <div class="budget-controls">
-      <div class="field">
-        <label for="busTypeSelect">Bus Type</label>
-        <select id="busTypeSelect"></select>
-      </div>
-      <div class="field">
-        <label for="busCount">Number of Buses</label>
-        <input type="number" id="busCount" value="1" min="1" max="9999" step="1">
-      </div>
-    </div>
-    <div class="budget-cards hidden" id="budgetCards"></div>
+    <p class="subtitle">Add bus types and quantities to project your full fleet budget. Results update automatically.</p>
+    <div class="fleet-lines" id="fleetLines"></div>
+    <button class="add-line-btn" id="addLineBtn">+ Add Bus Type</button>
+    <div class="table-wrap hidden" id="budgetResult" style="margin-top:24px"></div>
   </div>
 
 </div>
@@ -327,38 +332,79 @@ function renderTable(averages) {
   document.getElementById('tableWrap').innerHTML = html;
 }
 
-function populateSelect(averages) {
-  const sel = document.getElementById('busTypeSelect');
-  sel.innerHTML = Object.keys(averages).sort()
-    .map(t => `<option value="${t}">${t} (${averages[t]._count} bus${averages[t]._count !== 1 ? 'es' : ''})</option>`)
-    .join('');
+let _lineId = 0;
+
+function makeSelect() {
+  const sel = document.createElement('select');
+  if (_averages) {
+    Object.keys(_averages).sort().forEach(t => {
+      const o = document.createElement('option');
+      o.value = t;
+      o.textContent = `${t}  (${_averages[t]._count} in sample)`;
+      sel.appendChild(o);
+    });
+  }
+  sel.addEventListener('change', renderFleetBudget);
+  return sel;
 }
 
-function renderBudget(averages) {
-  const raw = document.getElementById('busTypeSelect').value;
-  const busType = raw.replace(/ \(\d+ buses?\)$/, '').trim();
-  const count   = Math.max(1, parseInt(document.getElementById('busCount').value, 10) || 1);
-  const d = averages[busType];
-  if (!d) return;
+function addFleetLine() {
+  const id = ++_lineId;
+  const line = document.createElement('div');
+  line.className = 'fleet-line';
+  line.dataset.lineId = id;
 
-  const cards = document.getElementById('budgetCards');
-  let html = GROUP_NAMES.map(g => `
-    <div class="budget-card">
-      <div class="g-name">${g}</div>
-      <div class="amount">${fmt(d[g] * count)}</div>
-      <div class="per-bus">${fmt(d[g])} avg/bus &times; ${count}</div>
-    </div>`).join('');
+  const sel = makeSelect();
+  const countInput = document.createElement('input');
+  countInput.type = 'number'; countInput.min = 1; countInput.max = 9999; countInput.value = 1;
+  countInput.addEventListener('input', renderFleetBudget);
 
-  html += `<div class="budget-card total-card">
-    <div>
-      <div class="g-name">Total Budget &mdash; ${busType}</div>
-      <div class="amount">${fmt(d._total * count)}</div>
-      <div class="per-bus">${fmt(d._total)} avg/bus &times; ${count} bus${count !== 1 ? 'es' : ''}</div>
-    </div>
-  </div>`;
+  const label = document.createElement('span');
+  label.className = 'line-label'; label.textContent = 'buses';
 
-  cards.innerHTML = html;
-  cards.classList.remove('hidden');
+  const removeBtn = document.createElement('button');
+  removeBtn.className = 'remove-btn'; removeBtn.textContent = '×'; removeBtn.title = 'Remove';
+  removeBtn.addEventListener('click', () => { line.remove(); renderFleetBudget(); });
+
+  line.append(sel, countInput, label, removeBtn);
+  document.getElementById('fleetLines').appendChild(line);
+  renderFleetBudget();
+}
+
+function renderFleetBudget() {
+  if (!_averages) return;
+  const lines = [...document.querySelectorAll('#fleetLines .fleet-line')].map(line => ({
+    busType: line.querySelector('select').value,
+    count:   Math.max(1, parseInt(line.querySelector('input').value, 10) || 1),
+  })).filter(l => l.busType && _averages[l.busType]);
+
+  const result = document.getElementById('budgetResult');
+  if (lines.length === 0) { result.classList.add('hidden'); return; }
+
+  let html = '<table class="budget-table" style="width:100%;border-collapse:collapse;font-size:0.83rem"><thead><tr>'
+    + '<th style="text-align:left;padding:9px 14px;background:#1a1a2e;color:white;white-space:nowrap">Spend Category</th>';
+  for (const l of lines) {
+    html += `<th style="padding:9px 14px;background:#1a1a2e;color:white;text-align:right;white-space:nowrap">${l.busType}<br><span style="font-weight:400;font-size:0.7rem;color:#8892b0">&times; ${l.count} bus${l.count !== 1 ? 'es' : ''}</span></th>`;
+  }
+  html += '<th style="padding:9px 14px;background:#0f172a;color:white;text-align:right;white-space:nowrap">Fleet Total</th></tr></thead><tbody>';
+
+  for (const g of GROUP_NAMES) {
+    const fleetTotal = lines.reduce((s, l) => s + _averages[l.busType][g] * l.count, 0);
+    html += `<tr><td style="padding:9px 14px;border-bottom:1px solid #f0f2f5;font-weight:500">${g}</td>`;
+    for (const l of lines) html += `<td style="padding:9px 14px;border-bottom:1px solid #f0f2f5;text-align:right">${fmt(_averages[l.busType][g] * l.count)}</td>`;
+    html += `<td class="total-col" style="padding:9px 14px;border-bottom:1px solid #f0f2f5;text-align:right">${fmt(fleetTotal)}</td></tr>`;
+  }
+
+  html += '<tr class="total-row"><td style="padding:10px 14px">Total</td>';
+  for (const l of lines) {
+    html += `<td style="padding:10px 14px;text-align:right">${fmt(_averages[l.busType]._total * l.count)}</td>`;
+  }
+  const grandTotal = lines.reduce((s, l) => s + _averages[l.busType]._total * l.count, 0);
+  html += `<td class="total-col" style="padding:10px 14px;text-align:right">${fmt(grandTotal)}</td></tr>`;
+  html += '</tbody></table>';
+
+  result.innerHTML = html;
+  result.classList.remove('hidden');
 }
 
 let _averages = null;
@@ -412,8 +458,21 @@ document.getElementById('processBtn').addEventListener('click', async () => {
       `${typeCount} bus type${typeCount !== 1 ? 's' : ''} · ${fleetMap.size.toLocaleString()} vehicles in fleet file · ${matched.toLocaleString()} spend lines matched`;
 
     renderTable(averages);
-    populateSelect(averages);
-    renderBudget(averages);
+    if (document.querySelectorAll('#fleetLines .fleet-line').length === 0) {
+      addFleetLine();
+    } else {
+      document.querySelectorAll('#fleetLines select').forEach(sel => {
+        const cur = sel.value;
+        sel.innerHTML = '';
+        Object.keys(averages).sort().forEach(t => {
+          const o = document.createElement('option');
+          o.value = t; o.textContent = `${t}  (${averages[t]._count} in sample)`;
+          sel.appendChild(o);
+        });
+        if (cur) sel.value = cur;
+      });
+      renderFleetBudget();
+    }
 
     document.getElementById('summaryCard').classList.remove('hidden');
     document.getElementById('budgetCard').classList.remove('hidden');
@@ -430,8 +489,7 @@ document.getElementById('processBtn').addEventListener('click', async () => {
   }
 });
 
-document.getElementById('busTypeSelect').addEventListener('change', () => { if (_averages) renderBudget(_averages); });
-document.getElementById('busCount').addEventListener('input',  () => { if (_averages) renderBudget(_averages); });
+document.getElementById('addLineBtn').addEventListener('click', addFleetLine);
 
 function renderDiagnostics(spendResult, fleetResult, spendRows, stats) {
   const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
