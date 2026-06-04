@@ -69,6 +69,7 @@ select:focus, input[type=number]:focus { outline: 2px solid #4a90d9; border-colo
 .hidden { display: none !important; }
 .subtitle { font-size: 0.8rem; color: #6b7280; margin-bottom: 16px; }
 </style>
+<script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
 </head>
 <body>
 <div class="header">
@@ -83,19 +84,19 @@ select:focus, input[type=number]:focus { outline: 2px solid #4a90d9; border-colo
       <div class="upload-box" id="spendBox">
         <label for="spendFile">
           <div class="icon">📊</div>
-          <div class="title">Spend Data CSV</div>
-          <div class="hint">One full year of transactions<br>Needs: FleetNumber, PLImpact, TransactionValue</div>
+          <div class="title">Spend Data</div>
+          <div class="hint">One full year of transactions (.xlsx)<br>Needs: FleetNumber, PLImpact, TransactionValue</div>
           <div class="filename" id="spendName">Click to select file</div>
-          <input type="file" id="spendFile" accept=".csv,.CSV">
+          <input type="file" id="spendFile" accept=".xlsx,.xls,.xlsm">
         </label>
       </div>
       <div class="upload-box" id="fleetBox">
         <label for="fleetFile">
           <div class="icon">🚌</div>
-          <div class="title">Fleet File CSV</div>
-          <div class="hint">Fleet Number &rarr; Chassis Variant<br>Two columns, headers required</div>
+          <div class="title">Fleet File</div>
+          <div class="hint">Fleet Number &rarr; Chassis Variant (.xlsx)<br>Two columns, headers required</div>
           <div class="filename" id="fleetName">Click to select file</div>
-          <input type="file" id="fleetFile" accept=".csv,.CSV">
+          <input type="file" id="fleetFile" accept=".xlsx,.xls,.xlsm">
         </label>
       </div>
     </div>
@@ -141,28 +142,14 @@ for (const [group, codes] of Object.entries(SPEND_GROUPS)) {
 }
 const GROUP_NAMES = Object.keys(SPEND_GROUPS);
 
-function parseCSV(text) {
-  const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
-  const result = [];
-  for (const line of lines) {
-    if (!line.trim()) continue;
-    const row = [];
-    let cur = '', inQuote = false;
-    for (let i = 0; i < line.length; i++) {
-      const ch = line[i];
-      if (ch === '"') {
-        if (inQuote && line[i + 1] === '"') { cur += '"'; i++; }
-        else inQuote = !inQuote;
-      } else if (ch === ',' && !inQuote) {
-        row.push(cur.trim()); cur = '';
-      } else {
-        cur += ch;
-      }
-    }
-    row.push(cur.trim());
-    result.push(row);
-  }
-  return result;
+async function readExcelFile(file) {
+  const buffer = await file.arrayBuffer();
+  const wb = XLSX.read(buffer, { type: 'array' });
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const raw = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+  return raw
+    .filter(row => row.some(cell => cell !== ''))
+    .map(row => row.map(cell => (cell === null || cell === undefined || cell === '') ? '' : String(cell).trim()));
 }
 
 function buildFleetMap(rows) {
@@ -341,16 +328,9 @@ document.getElementById('processBtn').addEventListener('click', async () => {
   setStatus('Reading files…', 'loading');
   document.getElementById('processBtn').disabled = true;
   try {
-    const readText = f => new Promise((res, rej) => {
-      const r = new FileReader();
-      r.onload = e => res(e.target.result);
-      r.onerror = rej;
-      r.readAsText(f);
-    });
-    const [spendText, fleetText] = await Promise.all([readText(_spendFile), readText(_fleetFile)]);
-    setStatus('Parsing…', 'loading');
-    const fleetRows = parseCSV(fleetText);
-    const spendRows = parseCSV(spendText);
+    setStatus('Reading Excel files…', 'loading');
+    const [spendRows, fleetRows] = await Promise.all([readExcelFile(_spendFile), readExcelFile(_fleetFile)]);
+    setStatus('Processing…', 'loading');
     const fleetMap  = buildFleetMap(fleetRows);
     const { averages, matched, skippedNoFleet, skippedNoGroup } = processSpend(spendRows, fleetMap);
     _averages = averages;
