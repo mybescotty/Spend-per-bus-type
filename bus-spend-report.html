@@ -68,6 +68,25 @@ select:focus, input[type=number]:focus { outline: 2px solid #4a90d9; border-colo
 
 .hidden { display: none !important; }
 .subtitle { font-size: 0.8rem; color: #6b7280; margin-bottom: 16px; }
+
+details.diag { border: 1px solid #e2e8f0; border-radius: 6px; margin-bottom: 10px; }
+details.diag summary { padding: 10px 14px; cursor: pointer; font-weight: 600; font-size: 0.82rem; list-style: none; display: flex; align-items: center; gap: 8px; }
+details.diag summary::before { content: '▶'; font-size: 0.65rem; transition: transform 0.15s; }
+details.diag[open] summary::before { transform: rotate(90deg); }
+details.diag summary:hover { background: #f9fafb; border-radius: 6px; }
+details.diag[open] summary { border-bottom: 1px solid #e2e8f0; border-radius: 6px 6px 0 0; }
+.diag-body { padding: 14px 16px; }
+.diag-label { font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: #6b7280; margin: 14px 0 5px; }
+.diag-label:first-child { margin-top: 0; }
+.sheet-pill { display: inline-block; padding: 2px 9px; border-radius: 99px; font-size: 0.74rem; background: #f0f2f5; margin: 2px; }
+.sheet-pill.active { background: #1a1a2e; color: white; }
+.diag-table { font-size: 0.75rem; border-collapse: collapse; max-width: 100%; overflow-x: auto; display: block; white-space: nowrap; }
+.diag-table th { background: #f0f2f5; padding: 4px 10px; text-align: left; border: 1px solid #e2e8f0; }
+.diag-table td { padding: 4px 10px; border: 1px solid #e2e8f0; }
+.col-found { color: #059669; font-weight: 600; }
+.col-missing { color: #dc2626; font-weight: 600; }
+.diag-stat { display: inline-block; margin-right: 16px; font-size: 0.82rem; }
+.diag-stat strong { color: #1a1a2e; }
 </style>
 <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
 </head>
@@ -102,6 +121,11 @@ select:focus, input[type=number]:focus { outline: 2px solid #4a90d9; border-colo
     </div>
     <button class="btn" id="processBtn" disabled>Generate Report</button>
     <div class="status" id="status">Upload both files to continue.</div>
+  </div>
+
+  <div class="card hidden" id="diagCard">
+    <h2>Diagnostics</h2>
+    <div id="diagContent"></div>
   </div>
 
   <div class="card hidden" id="summaryCard">
@@ -144,12 +168,22 @@ const GROUP_NAMES = Object.keys(SPEND_GROUPS);
 
 async function readExcelFile(file) {
   const buffer = await file.arrayBuffer();
-  const wb = XLSX.read(buffer, { type: 'array' });
-  const ws = wb.Sheets[wb.SheetNames[0]];
+  // Must wrap ArrayBuffer as Uint8Array — passing ArrayBuffer directly causes silent empty reads
+  const wb = XLSX.read(new Uint8Array(buffer), { type: 'array' });
+
+  const sheetInfo = wb.SheetNames.map(name => {
+    const ws = wb.Sheets[name];
+    const r  = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+    return { name, rawCount: r.length, nonEmptyCount: r.filter(row => row.some(c => c !== '')).length };
+  });
+
+  const ws  = wb.Sheets[wb.SheetNames[0]];
   const raw = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
-  return raw
-    .filter(row => row.some(cell => cell !== ''))
-    .map(row => row.map(cell => (cell === null || cell === undefined || cell === '') ? '' : String(cell).trim()));
+  const rows = raw
+    .filter(row => row.some(c => c !== ''))
+    .map(row => row.map(c => (c === null || c === undefined || c === '') ? '' : String(c).trim()));
+
+  return { rows, sheetInfo, selectedSheet: wb.SheetNames[0] };
 }
 
 function buildFleetMap(rows) {
@@ -325,15 +359,19 @@ document.getElementById('fleetFile').addEventListener('change', e => {
 });
 
 document.getElementById('processBtn').addEventListener('click', async () => {
-  setStatus('Reading files…', 'loading');
+  setStatus('Reading Excel files…', 'loading');
   document.getElementById('processBtn').disabled = true;
+  let spendResult = null, fleetResult = null;
   try {
-    setStatus('Reading Excel files…', 'loading');
-    const [spendRows, fleetRows] = await Promise.all([readExcelFile(_spendFile), readExcelFile(_fleetFile)]);
+    [spendResult, fleetResult] = await Promise.all([readExcelFile(_spendFile), readExcelFile(_fleetFile)]);
+    const spendRows = spendResult.rows;
+    const fleetRows = fleetResult.rows;
     setStatus('Processing…', 'loading');
     const fleetMap  = buildFleetMap(fleetRows);
     const { averages, matched, skippedNoFleet, skippedNoGroup } = processSpend(spendRows, fleetMap);
     _averages = averages;
+
+    renderDiagnostics(spendResult, fleetResult, spendRows, { matched, skippedNoFleet, skippedNoGroup });
 
     const typeCount = Object.keys(averages).length;
     document.getElementById('summarySubtitle').textContent =
@@ -350,6 +388,7 @@ document.getElementById('processBtn').addEventListener('click', async () => {
     const warn = skippedNoGroup > 0 ? ` (${skippedNoGroup.toLocaleString()} fleet numbers not in fleet file — check both files match)` : '';
     setStatus(`Done — ${typeCount} bus type${typeCount !== 1 ? 's' : ''} found.${warn}`, 'success');
   } catch (err) {
+    if (spendResult || fleetResult) renderDiagnostics(spendResult, fleetResult, spendResult ? spendResult.rows : null, null);
     setStatus('Error: ' + err.message, 'error');
     console.error(err);
   } finally {
@@ -359,6 +398,76 @@ document.getElementById('processBtn').addEventListener('click', async () => {
 
 document.getElementById('busTypeSelect').addEventListener('change', () => { if (_averages) renderBudget(_averages); });
 document.getElementById('busCount').addEventListener('input',  () => { if (_averages) renderBudget(_averages); });
+
+function renderDiagnostics(spendResult, fleetResult, spendRows, stats) {
+  const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+
+  function fileSection(label, result, isSpend) {
+    if (!result) return `<details class="diag"><summary>${label} — not read yet</summary></details>`;
+    const { rows, sheetInfo, selectedSheet } = result;
+
+    const sheetPills = sheetInfo.map(s =>
+      `<span class="sheet-pill${s.name === selectedSheet ? ' active' : ''}">${esc(s.name)} (${s.nonEmptyCount.toLocaleString()} rows)</span>`
+    ).join('');
+
+    const headers = rows.length > 0 ? rows[0] : [];
+    const headerList = headers.length
+      ? headers.slice(0, 15).map(h => `<code>${esc(h)}</code>`).join(' · ') + (headers.length > 15 ? ` <em>…+${headers.length - 15} more</em>` : '')
+      : '<em>No headers found</em>';
+
+    let colDetect = '';
+    if (isSpend && rows.length > 0) {
+      const hi = name => headers.findIndex(h => h.toLowerCase() === name.toLowerCase());
+      const cols = [
+        { name: 'FleetNumber',      idx: hi('FleetNumber') },
+        { name: 'PLImpact',         idx: hi('PLImpact') },
+        { name: 'TransactionValue', idx: hi('TransactionValue') },
+      ];
+      colDetect = `<div class="diag-label">Key column detection</div>`
+        + cols.map(c => c.idx === -1
+          ? `<span class="diag-stat"><span class="col-missing">✗ ${esc(c.name)}</span> — not found</span>`
+          : `<span class="diag-stat"><span class="col-found">✓ ${esc(c.name)}</span> at column ${c.idx + 1}</span>`
+        ).join('');
+    }
+
+    let previewHtml = '';
+    if (rows.length > 0) {
+      const cols = Math.min(headers.length, 8);
+      const previewRows = rows.slice(0, 4);
+      previewHtml = `<div class="diag-label">Data preview (first ${previewRows.length - 1} rows, first ${cols} columns)</div>`
+        + `<table class="diag-table"><thead><tr>${headers.slice(0, cols).map(h => `<th>${esc(h)}</th>`).join('')}</tr></thead><tbody>`
+        + previewRows.slice(1).map(r => `<tr>${r.slice(0, cols).map(c => `<td>${esc(c)}</td>`).join('')}</tr>`).join('')
+        + `</tbody></table>`;
+    }
+
+    let statsHtml = '';
+    if (isSpend && stats) {
+      statsHtml = `<div class="diag-label">Match statistics</div>`
+        + `<span class="diag-stat">Matched: <strong>${stats.matched.toLocaleString()}</strong></span>`
+        + `<span class="diag-stat">Skipped (bad data): <strong>${stats.skippedNoFleet.toLocaleString()}</strong></span>`
+        + `<span class="diag-stat">Fleet number not in fleet file: <strong>${stats.skippedNoGroup.toLocaleString()}</strong></span>`;
+    }
+
+    const rowCount = rows.length > 0 ? rows.length - 1 : 0;
+    const ok = rows.length >= 2;
+    return `<details class="diag"${!ok ? ' open' : ''}>
+      <summary>${label} — ${ok ? `<span class="col-found">${rowCount.toLocaleString()} data rows read</span>` : `<span class="col-missing">0 rows read — check file</span>`}</summary>
+      <div class="diag-body">
+        <div class="diag-label">Sheets in workbook</div>${sheetPills}
+        <div class="diag-label">Headers detected (first 15)</div><div>${headerList}</div>
+        ${colDetect}
+        ${previewHtml}
+        ${statsHtml}
+      </div>
+    </details>`;
+  }
+
+  const html = fileSection('Spend Data', spendResult, true)
+             + fileSection('Fleet File', fleetResult, false);
+
+  document.getElementById('diagContent').innerHTML = html;
+  document.getElementById('diagCard').classList.remove('hidden');
+}
 </script>
 </body>
 </html>
