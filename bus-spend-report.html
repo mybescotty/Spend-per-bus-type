@@ -104,18 +104,18 @@ details.diag[open] summary { border-bottom: 1px solid #e2e8f0; border-radius: 6p
         <label for="spendFile">
           <div class="icon">📊</div>
           <div class="title">Spend Data</div>
-          <div class="hint">One full year of transactions (.xlsx)<br>Needs: FleetNumber, PLImpact, TransactionValue</div>
+          <div class="hint">One full year of transactions<br>.xlsx or .csv &mdash; Needs: FleetNumber, PLImpact, TransactionValue</div>
           <div class="filename" id="spendName">Click to select file</div>
-          <input type="file" id="spendFile" accept=".xlsx,.xls,.xlsm">
+          <input type="file" id="spendFile" accept=".xlsx,.xls,.xlsm,.csv">
         </label>
       </div>
       <div class="upload-box" id="fleetBox">
         <label for="fleetFile">
           <div class="icon">🚌</div>
           <div class="title">Fleet File</div>
-          <div class="hint">Fleet Number &rarr; Chassis Variant (.xlsx)<br>Two columns, headers required</div>
+          <div class="hint">Fleet Number &rarr; Chassis Variant<br>.xlsx or .csv &mdash; Two columns, headers required</div>
           <div class="filename" id="fleetName">Click to select file</div>
-          <input type="file" id="fleetFile" accept=".xlsx,.xls,.xlsm">
+          <input type="file" id="fleetFile" accept=".xlsx,.xls,.xlsm,.csv">
         </label>
       </div>
     </div>
@@ -166,32 +166,57 @@ for (const [group, codes] of Object.entries(SPEND_GROUPS)) {
 }
 const GROUP_NAMES = Object.keys(SPEND_GROUPS);
 
-function readExcelFile(file) {
+function parseCSV(text) {
+  const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+  const result = [];
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    const row = [];
+    let cur = '', inQuote = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (ch === '"') {
+        if (inQuote && line[i + 1] === '"') { cur += '"'; i++; }
+        else inQuote = !inQuote;
+      } else if (ch === ',' && !inQuote) {
+        row.push(cur.trim()); cur = '';
+      } else { cur += ch; }
+    }
+    row.push(cur.trim());
+    result.push(row);
+  }
+  return result;
+}
+
+function readDataFile(file) {
+  const isCSV = /\.(csv)$/i.test(file.name);
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onerror = () => reject(new Error('Could not read file: ' + file.name));
     reader.onload = e => {
       try {
-        const wb = XLSX.read(e.target.result, { type: 'binary' });
-
-        const sheetInfo = wb.SheetNames.map(name => {
-          const ws = wb.Sheets[name];
-          const r  = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
-          return { name, rawCount: r.length, nonEmptyCount: r.filter(row => row.some(c => c !== '')).length };
-        });
-
-        const ws  = wb.Sheets[wb.SheetNames[0]];
-        const raw = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
-        const rows = raw
-          .filter(row => row.some(c => c !== ''))
-          .map(row => row.map(c => (c === null || c === undefined || c === '') ? '' : String(c).trim()));
-
-        resolve({ rows, sheetInfo, selectedSheet: wb.SheetNames[0] });
+        if (isCSV) {
+          const rows = parseCSV(e.target.result);
+          resolve({ rows, sheetInfo: [{ name: 'CSV', nonEmptyCount: rows.length - 1 }], selectedSheet: 'CSV' });
+        } else {
+          const wb = XLSX.read(e.target.result, { type: 'binary' });
+          const sheetInfo = wb.SheetNames.map(name => {
+            const ws = wb.Sheets[name];
+            const r  = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+            return { name, rawCount: r.length, nonEmptyCount: r.filter(row => row.some(c => c !== '')).length };
+          });
+          const ws  = wb.Sheets[wb.SheetNames[0]];
+          const raw = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+          const rows = raw
+            .filter(row => row.some(c => c !== ''))
+            .map(row => row.map(c => (c === null || c === undefined || c === '') ? '' : String(c).trim()));
+          resolve({ rows, sheetInfo, selectedSheet: wb.SheetNames[0] });
+        }
       } catch (err) {
-        reject(new Error('Excel parse error: ' + err.message));
+        reject(new Error('Parse error: ' + err.message));
       }
     };
-    reader.readAsBinaryString(file);
+    isCSV ? reader.readAsText(file) : reader.readAsBinaryString(file);
   });
 }
 
@@ -372,7 +397,7 @@ document.getElementById('processBtn').addEventListener('click', async () => {
   document.getElementById('processBtn').disabled = true;
   let spendResult = null, fleetResult = null;
   try {
-    [spendResult, fleetResult] = await Promise.all([readExcelFile(_spendFile), readExcelFile(_fleetFile)]);
+    [spendResult, fleetResult] = await Promise.all([readDataFile(_spendFile), readDataFile(_fleetFile)]);
     const spendRows = spendResult.rows;
     const fleetRows = fleetResult.rows;
     setStatus('Processing…', 'loading');
