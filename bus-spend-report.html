@@ -166,24 +166,33 @@ for (const [group, codes] of Object.entries(SPEND_GROUPS)) {
 }
 const GROUP_NAMES = Object.keys(SPEND_GROUPS);
 
-async function readExcelFile(file) {
-  const buffer = await file.arrayBuffer();
-  // Must wrap ArrayBuffer as Uint8Array — passing ArrayBuffer directly causes silent empty reads
-  const wb = XLSX.read(new Uint8Array(buffer), { type: 'array' });
+function readExcelFile(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('Could not read file: ' + file.name));
+    reader.onload = e => {
+      try {
+        const wb = XLSX.read(e.target.result, { type: 'binary' });
 
-  const sheetInfo = wb.SheetNames.map(name => {
-    const ws = wb.Sheets[name];
-    const r  = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
-    return { name, rawCount: r.length, nonEmptyCount: r.filter(row => row.some(c => c !== '')).length };
+        const sheetInfo = wb.SheetNames.map(name => {
+          const ws = wb.Sheets[name];
+          const r  = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+          return { name, rawCount: r.length, nonEmptyCount: r.filter(row => row.some(c => c !== '')).length };
+        });
+
+        const ws  = wb.Sheets[wb.SheetNames[0]];
+        const raw = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+        const rows = raw
+          .filter(row => row.some(c => c !== ''))
+          .map(row => row.map(c => (c === null || c === undefined || c === '') ? '' : String(c).trim()));
+
+        resolve({ rows, sheetInfo, selectedSheet: wb.SheetNames[0] });
+      } catch (err) {
+        reject(new Error('Excel parse error: ' + err.message));
+      }
+    };
+    reader.readAsBinaryString(file);
   });
-
-  const ws  = wb.Sheets[wb.SheetNames[0]];
-  const raw = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
-  const rows = raw
-    .filter(row => row.some(c => c !== ''))
-    .map(row => row.map(c => (c === null || c === undefined || c === '') ? '' : String(c).trim()));
-
-  return { rows, sheetInfo, selectedSheet: wb.SheetNames[0] };
 }
 
 function buildFleetMap(rows) {
