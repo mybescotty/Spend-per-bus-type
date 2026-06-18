@@ -242,6 +242,7 @@ function buildFleetMap(rows) {
   const typeIdx  = headers.findIndex(h => h.includes('chassis') || h.includes('variant'));
   const depotIdx = headers.findIndex(h => h === 'depot');
   const plantIdx = headers.findIndex(h => h.includes('sapplant') || (h.includes('plant') && h.includes('desc')));
+  const effectiveDepotIdx = depotIdx >= 0 ? depotIdx : plantIdx;
   if (numIdx  === -1) throw new Error(`Fleet file: cannot find fleet number column. Headers found: ${rows[0].join(', ')}`);
   if (typeIdx === -1) throw new Error(`Fleet file: cannot find chassis/variant column. Headers found: ${rows[0].join(', ')}`);
   const map = new Map();
@@ -250,8 +251,8 @@ function buildFleetMap(rows) {
     const row = rows[i];
     const num   = (row[numIdx]  || '').trim();
     const type  = (row[typeIdx] || '').trim();
-    const depot = depotIdx >= 0 ? (row[depotIdx] || '').trim() : '';
-    const plant = plantIdx >= 0 ? (row[plantIdx] || '').trim() : '';
+    const depot = effectiveDepotIdx >= 0 ? (row[effectiveDepotIdx] || '').trim() : '';
+    const plant = plantIdx >= 0 && plantIdx !== effectiveDepotIdx ? (row[plantIdx] || '').trim() : '';
     if (num && type) {
       map.set(num, { busType: type, depot });
       if (depot) depotNames.set(depot, plant || depot);
