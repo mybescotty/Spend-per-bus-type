@@ -524,7 +524,14 @@ document.getElementById('processBtn').addEventListener('click', async () => {
       const o = document.createElement('option'); o.value = code; o.textContent = name;
       depotSel.appendChild(o);
     });
-    if (depotNames.size > 0) document.getElementById('depotBar').classList.remove('hidden');
+    if (depotNames.size > 0) {
+      document.getElementById('depotBar').classList.remove('hidden');
+      depotSel.disabled = false;
+    } else {
+      document.getElementById('depotBar').classList.remove('hidden');
+      depotSel.innerHTML = '<option value="">No Depot column in fleet file — re-export with all columns to enable</option>';
+      depotSel.disabled = true;
+    }
 
     renderTable(averages, '');
     if (document.querySelectorAll('#fleetLines .fleet-line').length === 0) {
