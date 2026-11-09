@@ -111,6 +111,8 @@ details.diag[open] summary { border-bottom: 1px solid #e2e8f0; border-radius: 6p
 input[type=text] { padding: 9px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 0.88rem; min-width: 260px; background: white; color: #1a1a2e; }
 input[type=text]:focus { outline: 2px solid #4a90d9; border-color: transparent; }
 .toolbar { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+.toolbar .fields { display: flex; gap: 16px; flex-wrap: wrap; align-items: flex-end; }
+.budget-note { font-size: 0.78rem; color: #92400e; background: #fffbeb; border: 1px solid #fde68a; border-radius: 6px; padding: 8px 12px; margin-top: 10px; }
 .toolbar .btns { display: flex; gap: 8px; flex-wrap: wrap; }
 .btn.small { padding: 8px 16px; font-size: 0.82rem; }
 .embed-banner { background: #eef4ff; border: 1px solid #c7dbf7; border-radius: 10px; padding: 14px 18px; margin-bottom: 24px; font-size: 0.85rem; color: #1e3a5f; display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
@@ -178,9 +180,15 @@ input[type=text]:focus { outline: 2px solid #4a90d9; border-color: transparent; 
     <h2>Budget Calculator</h2>
     <p class="subtitle">Add bus types and quantities to project your full fleet budget. Results update automatically.</p>
     <div class="toolbar">
+      <div class="fields">
       <div class="field">
         <label for="planName">Plan name (optional)</label>
         <input type="text" id="planName" placeholder="e.g. Depot X 2027 budget">
+      </div>
+      <div class="field">
+        <label for="budgetBasis">Use averages from</label>
+        <select id="budgetBasis"><option value="">Whole fleet</option></select>
+      </div>
       </div>
       <div class="btns">
         <button class="btn secondary small" id="exportBudgetHtml" disabled>Download HTML</button>
@@ -445,13 +453,33 @@ function renderTable(averages, selectedDepot = '') {
 
 let _lineId = 0;
 
+function optionLabel(t) {
+  const basis = budgetBasis();
+  if (!basis) return `${t}  (${_averages[t]._count} in sample)`;
+  const d = _averages[t]._depots[basis];
+  return d ? `${t}  (${d._count} at depot)` : `${t}  (none at depot — fleet avg)`;
+}
+
+function refreshLineOptions() {
+  document.querySelectorAll('#fleetLines select').forEach(sel => {
+    const cur = sel.value;
+    sel.innerHTML = '';
+    Object.keys(_averages).sort().forEach(t => {
+      const o = document.createElement('option');
+      o.value = t; o.textContent = optionLabel(t);
+      sel.appendChild(o);
+    });
+    if (cur && _averages[cur]) sel.value = cur;
+  });
+}
+
 function makeSelect() {
   const sel = document.createElement('select');
   if (_averages) {
     Object.keys(_averages).sort().forEach(t => {
       const o = document.createElement('option');
       o.value = t;
-      o.textContent = `${t}  (${_averages[t]._count} in sample)`;
+      o.textContent = optionLabel(t);
       sel.appendChild(o);
     });
   }
@@ -491,17 +519,48 @@ function getBudgetLines() {
   })).filter(l => l.busType && _averages[l.busType]);
 }
 
+function budgetBasis() {
+  return document.getElementById('budgetBasis').value;
+}
+
+function basisLabel(basis = budgetBasis()) {
+  return basis ? `${_depotNames.get(basis) || basis} depot averages` : 'Whole fleet averages';
+}
+
+// Per-bus averages for a line: the chosen depot's own figures, or the whole fleet's.
+// If the depot has none of that bus type, fall back to the fleet figures and flag it.
+function rateFor(busType, basis = budgetBasis()) {
+  const fleet = _averages[busType];
+  if (basis) {
+    const d = fleet._depots && fleet._depots[basis];
+    if (d) return { rate: d, source: 'depot', fallback: false };
+    return { rate: fleet, source: 'fleet', fallback: true };
+  }
+  return { rate: fleet, source: 'fleet', fallback: false };
+}
+
+const LOW_SAMPLE = 5;
+
 // One calculation shared by the on-screen table and both exports.
 function computeBudget(lines) {
+  const basis = budgetBasis();
+  lines = lines.map(l => ({ ...l, ...rateFor(l.busType, basis) }));
   const rows = GROUP_NAMES.map(g => {
-    const values = lines.map(l => _averages[l.busType][g] * l.count);
+    const values = lines.map(l => l.rate[g] * l.count);
     return { group: g, values, total: values.reduce((s, v) => s + v, 0) };
   });
-  const lineTotals = lines.map(l => _averages[l.busType]._total * l.count);
+  const lineTotals = lines.map(l => l.rate._total * l.count);
   const grandTotal = lineTotals.reduce((s, v) => s + v, 0);
   const totalBuses = lines.reduce((s, l) => s + l.count, 0);
-  return { lines, rows, lineTotals, grandTotal, totalBuses };
+  const notes = [];
+  const fb = lines.filter(l => l.fallback).map(l => l.busType);
+  if (fb.length) notes.push(`No ${fb.join(', ')} at ${_depotNames.get(basis) || basis}, so whole fleet averages are used for ${fb.length === 1 ? 'that type' : 'those types'} (marked *).`);
+  const low = lines.filter(l => !l.fallback && l.rate._count < LOW_SAMPLE).map(l => `${l.busType} (${l.rate._count})`);
+  if (low.length) notes.push(`Small sample — fewer than ${LOW_SAMPLE} buses behind the average for: ${low.join(', ')}. Treat these figures with care.`);
+  return { lines, rows, lineTotals, grandTotal, totalBuses, basis, notes };
 }
+
+const lineHeadNote = l => `${l.fallback ? 'fleet avg* · ' : ''}${l.rate._count} in sample`;
 
 function renderFleetBudget() {
   if (!_averages) return;
@@ -513,10 +572,11 @@ function renderFleetBudget() {
   if (!hasLines) { result.classList.add('hidden'); return; }
 
   const b = computeBudget(lines);
+  const blines = b.lines;
   let html = '<table class="budget-table" style="width:100%;border-collapse:collapse;font-size:0.83rem"><thead><tr>'
     + '<th style="text-align:left;padding:9px 14px;background:#1a1a2e;color:white;white-space:nowrap">Spend Category</th>';
-  for (const l of lines) {
-    html += `<th style="padding:9px 14px;background:#1a1a2e;color:white;text-align:right;white-space:nowrap">${esc(l.busType)}<br><span style="font-weight:400;font-size:0.7rem;color:#8892b0">&times; ${l.count} bus${l.count !== 1 ? 'es' : ''}</span></th>`;
+  for (const l of blines) {
+    html += `<th style="padding:9px 14px;background:#1a1a2e;color:white;text-align:right;white-space:nowrap">${esc(l.busType)}${l.fallback ? '*' : ''}<br><span style="font-weight:400;font-size:0.7rem;color:#8892b0">&times; ${l.count} bus${l.count !== 1 ? 'es' : ''} · ${lineHeadNote(l)}</span></th>`;
   }
   html += '<th style="padding:9px 14px;background:#0f172a;color:white;text-align:right;white-space:nowrap">Fleet Total</th></tr></thead><tbody>';
 
@@ -530,6 +590,8 @@ function renderFleetBudget() {
   for (const v of b.lineTotals) html += `<td style="padding:10px 14px;text-align:right">${fmt(v)}</td>`;
   html += `<td class="total-col" style="padding:10px 14px;text-align:right">${fmt(b.grandTotal)}</td></tr>`;
   html += '</tbody></table>';
+  html += `<p class="subtitle" style="margin:10px 0 0">Based on: ${esc(basisLabel(b.basis))}.</p>`;
+  html += b.notes.map(n => `<div class="budget-note">${esc(n)}</div>`).join('');
 
   result.innerHTML = html;
   result.classList.remove('hidden');
@@ -555,10 +617,11 @@ function exportBudgetHtml() {
   const title = planTitle();
   const created = new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
 
-  const fleetRows = lines.map((l, i) =>
-    `<tr><td>${esc(l.busType)}</td><td class="c">${l.count}</td><td>${fmt(_averages[l.busType]._total)}</td><td>${fmt(b.lineTotals[i])}</td></tr>`).join('');
+  const fleetRows = b.lines.map((l, i) =>
+    `<tr><td>${esc(l.busType)}${l.fallback ? '*' : ''}</td><td class="c">${l.count}</td><td class="c">${l.rate._count}</td><td>${fmt(l.rate._total)}</td><td>${fmt(b.lineTotals[i])}</td></tr>`).join('');
+  const notesHtml = b.notes.map(n => `<p class="note">${esc(n)}</p>`).join('');
 
-  const head = lines.map(l => `<th>${esc(l.busType)}<span>&times; ${l.count} bus${l.count !== 1 ? 'es' : ''}</span></th>`).join('');
+  const head = b.lines.map(l => `<th>${esc(l.busType)}${l.fallback ? '*' : ''}<span>&times; ${l.count} bus${l.count !== 1 ? 'es' : ''}</span></th>`).join('');
   const body = b.rows.map(r =>
     `<tr><td>${esc(r.group)}</td>${r.values.map(v => `<td>${fmt(v)}</td>`).join('')}<td class="tc">${fmt(r.total)}</td></tr>`).join('');
   const totals = `<tr class="tot"><td>Total</td>${b.lineTotals.map(v => `<td>${fmt(v)}</td>`).join('')}<td class="tc">${fmt(b.grandTotal)}</td></tr>`;
@@ -593,12 +656,13 @@ td.tc{font-weight:700;background:#f8fafc}
 tr.tot td{background:#1a1a2e;color:#fff;font-weight:700}
 tr.tot td.tc{background:#111827}
 .foot{font-size:.74rem;color:#6b7280;margin-top:8px}
+.note{font-size:.76rem;color:#92400e;background:#fffbeb;border:1px solid #fde68a;border-radius:6px;padding:7px 10px;margin-top:8px}
 @media print{body{background:#fff;padding:0}.card,.header{box-shadow:none}th,tr.tot td{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
 </style>
 </head>
 <body>
 <div class="page">
-  <div class="header"><h1>${esc(title)}</h1><p>Created ${created}${sourceLine() ? ' · ' + esc(sourceLine()) : ''}</p></div>
+  <div class="header"><h1>${esc(title)}</h1><p>${esc(basisLabel(b.basis))} · Created ${created}${sourceLine() ? ' · ' + esc(sourceLine()) : ''}</p></div>
   <div class="card">
     <div class="kpi">
       <div>Total Budget<strong>${fmt(b.grandTotal)}</strong></div>
@@ -609,8 +673,8 @@ tr.tot td.tc{background:#111827}
   <div class="card">
     <h2>Fleet</h2>
     <div class="wrap"><table>
-      <thead><tr><th>Bus Type</th><th style="text-align:center">Buses</th><th>Average per Bus</th><th>Budget</th></tr></thead>
-      <tbody>${fleetRows}<tr class="tot"><td>Total</td><td class="c">${b.totalBuses}</td><td></td><td class="tc">${fmt(b.grandTotal)}</td></tr></tbody>
+      <thead><tr><th>Bus Type</th><th style="text-align:center">Buses</th><th style="text-align:center">Buses in Sample</th><th>Average per Bus</th><th>Budget</th></tr></thead>
+      <tbody>${fleetRows}<tr class="tot"><td>Total</td><td class="c">${b.totalBuses}</td><td></td><td></td><td class="tc">${fmt(b.grandTotal)}</td></tr></tbody>
     </table></div>
   </div>
   <div class="card">
@@ -619,7 +683,8 @@ tr.tot td.tc{background:#111827}
       <thead><tr><th>Spend Category</th>${head}<th>Fleet Total</th></tr></thead>
       <tbody>${body}${totals}</tbody>
     </table></div>
-    <p class="foot">Budgets are average annual spend per bus for each bus type, multiplied by the number of buses.</p>
+    <p class="foot">Budgets are average annual spend per bus for each bus type (${esc(basisLabel(b.basis))}), multiplied by the number of buses.</p>
+    ${notesHtml}
   </div>
 </div>
 </body>
@@ -638,14 +703,15 @@ function exportBudgetXlsx() {
   // Sheet 1: budget by category
   const aoa = [
     [title],
-    [`Created ${new Date().toLocaleDateString('en-GB')}` + (sourceLine() ? ' · ' + sourceLine() : '')],
+    [`${basisLabel(b.basis)} · Created ${new Date().toLocaleDateString('en-GB')}` + (sourceLine() ? ' · ' + sourceLine() : '')],
     [],
-    ['Spend Category', ...lines.map(l => `${l.busType} × ${l.count}`), 'Fleet Total'],
+    ['Spend Category', ...b.lines.map(l => `${l.busType}${l.fallback ? '*' : ''} × ${l.count}`), 'Fleet Total'],
     ...b.rows.map(r => [r.group, ...r.values, r.total]),
     ['Total', ...b.lineTotals, b.grandTotal],
+    ...(b.notes.length ? [[], ...b.notes.map(n => [n])] : []),
   ];
   const ws = XLSX.utils.aoa_to_sheet(aoa);
-  const firstDataRow = 4, lastRow = aoa.length - 1;
+  const firstDataRow = 4, lastRow = 4 + b.rows.length;
   for (let r = firstDataRow; r <= lastRow; r++) {
     for (let c = 1; c <= lines.length + 1; c++) {
       const cell = ws[XLSX.utils.encode_cell({ r, c })];
@@ -656,18 +722,18 @@ function exportBudgetXlsx() {
 
   // Sheet 2: fleet lines
   const aoa2 = [
-    ['Bus Type', 'Buses', 'Buses in Sample', 'Average per Bus', 'Budget'],
-    ...lines.map((l, i) => [l.busType, l.count, _averages[l.busType]._count, _averages[l.busType]._total, b.lineTotals[i]]),
-    ['Total', b.totalBuses, '', '', b.grandTotal],
+    ['Bus Type', 'Buses', 'Average Basis', 'Buses in Sample', 'Average per Bus', 'Budget'],
+    ...b.lines.map((l, i) => [l.busType, l.count, l.source === 'depot' ? (_depotNames.get(b.basis) || b.basis) : (l.fallback ? 'Whole fleet (none at depot)' : 'Whole fleet'), l.rate._count, l.rate._total, b.lineTotals[i]]),
+    ['Total', b.totalBuses, '', '', '', b.grandTotal],
   ];
   const ws2 = XLSX.utils.aoa_to_sheet(aoa2);
   for (let r = 1; r < aoa2.length; r++) {
-    for (const c of [3, 4]) {
+    for (const c of [4, 5]) {
       const cell = ws2[XLSX.utils.encode_cell({ r, c })];
       if (cell && cell.t === 'n') cell.z = MONEY;
     }
   }
-  ws2['!cols'] = [{ wch: 30 }, { wch: 8 }, { wch: 16 }, { wch: 16 }, { wch: 16 }];
+  ws2['!cols'] = [{ wch: 30 }, { wch: 8 }, { wch: 26 }, { wch: 16 }, { wch: 16 }, { wch: 16 }];
 
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Budget by Category');
@@ -684,7 +750,7 @@ function saveReportWithData() {
     subtitle: document.getElementById('summarySubtitle').textContent,
     averages: _averages,
     depotNames: [..._depotNames.entries()],
-    plan: { name: document.getElementById('planName').value, lines: getBudgetLines() },
+    plan: { name: document.getElementById('planName').value, basis: budgetBasis(), lines: getBudgetLines() },
   };
   const clone = _pristineDoc.cloneNode(true);
   const old = clone.querySelector('#embeddedData');
@@ -702,7 +768,7 @@ function saveReportWithData() {
 
 let _reportMeta = {};
 
-function showReport(averages, depotNames, subtitle, planLines) {
+function showReport(averages, depotNames, subtitle, planLines, planBasis) {
   _averages = averages;
   _depotNames = depotNames;
   document.getElementById('summarySubtitle').textContent = subtitle;
@@ -721,6 +787,15 @@ function showReport(averages, depotNames, subtitle, planLines) {
     depotSel.disabled = true;
   }
 
+  const basisSel = document.getElementById('budgetBasis');
+  basisSel.innerHTML = '<option value="">Whole fleet</option>';
+  [...depotNames.entries()].sort((a, b) => a[1].localeCompare(b[1])).forEach(([code, name]) => {
+    const o = document.createElement('option'); o.value = code; o.textContent = name;
+    basisSel.appendChild(o);
+  });
+  basisSel.disabled = depotNames.size === 0;
+  if (planBasis && depotNames.has(planBasis)) basisSel.value = planBasis;
+
   renderTable(averages, '');
   if (planLines && planLines.length) {
     document.getElementById('fleetLines').innerHTML = '';
@@ -728,16 +803,7 @@ function showReport(averages, depotNames, subtitle, planLines) {
   } else if (document.querySelectorAll('#fleetLines .fleet-line').length === 0) {
     addFleetLine();
   } else {
-    document.querySelectorAll('#fleetLines select').forEach(sel => {
-      const cur = sel.value;
-      sel.innerHTML = '';
-      Object.keys(averages).sort().forEach(t => {
-        const o = document.createElement('option');
-        o.value = t; o.textContent = `${t}  (${averages[t]._count} in sample)`;
-        sel.appendChild(o);
-      });
-      if (cur) sel.value = cur;
-    });
+    refreshLineOptions();
     renderFleetBudget();
   }
 
@@ -809,6 +875,7 @@ document.getElementById('processBtn').addEventListener('click', async () => {
 
 document.getElementById('addLineBtn').addEventListener('click', () => addFleetLine());
 document.getElementById('exportBudgetHtml').addEventListener('click', exportBudgetHtml);
+document.getElementById('budgetBasis').addEventListener('change', () => { refreshLineOptions(); renderFleetBudget(); });
 document.getElementById('exportBudgetXlsx').addEventListener('click', exportBudgetXlsx);
 document.getElementById('saveReportBtn').addEventListener('click', saveReportWithData);
 document.getElementById('loadNewBtn').addEventListener('click', () => {
@@ -897,7 +964,7 @@ function renderDiagnostics(spendResult, fleetResult, spendRows, stats) {
     const d = JSON.parse(el.textContent);
     _reportMeta = d.meta || {};
     if (d.plan && d.plan.name) document.getElementById('planName').value = d.plan.name;
-    showReport(d.averages, new Map(d.depotNames || []), d.subtitle || '', d.plan && d.plan.lines);
+    showReport(d.averages, new Map(d.depotNames || []), d.subtitle || '', d.plan && d.plan.lines, d.plan && d.plan.basis);
     document.getElementById('uploadCard').classList.add('hidden');
     const info = sourceLine();
     document.getElementById('embedInfo').textContent =
