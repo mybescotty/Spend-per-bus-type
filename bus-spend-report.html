@@ -111,6 +111,19 @@ details.diag[open] summary { border-bottom: 1px solid #e2e8f0; border-radius: 6p
 input[type=text] { padding: 9px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 0.88rem; min-width: 260px; background: white; color: #1a1a2e; }
 input[type=text]:focus { outline: 2px solid #4a90d9; border-color: transparent; }
 .toolbar { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+.unc-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin-bottom: 18px; }
+.unc-kpi { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px 14px; }
+.unc-kpi .k { font-size: 0.7rem; font-weight: 700; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; }
+.unc-kpi .v { font-size: 1.2rem; font-weight: 700; margin-top: 4px; }
+.unc-kpi .s { font-size: 0.74rem; color: #6b7280; margin-top: 2px; }
+.unc-kpi.warn { background: #fffbeb; border-color: #fde68a; }
+.unc-kpi.ok { background: #ecfdf5; border-color: #a7f3d0; }
+.unc-section { margin-top: 14px; }
+.unc-section summary { font-weight: 600; font-size: 0.85rem; cursor: pointer; padding: 8px 0; }
+.unc-section summary span { color: #6b7280; font-weight: 400; }
+.unc-table td, .unc-table th { padding: 7px 12px; }
+.unc-table td:nth-child(2) { text-align: right; color: inherit; }
+.unc-empty { font-size: 0.82rem; color: #059669; padding: 4px 0 8px; }
 .toolbar .fields { display: flex; gap: 16px; flex-wrap: wrap; align-items: flex-end; }
 .budget-note { font-size: 0.78rem; color: #92400e; background: #fffbeb; border: 1px solid #fde68a; border-radius: 6px; padding: 8px 12px; margin-top: 10px; }
 .toolbar .btns { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -198,6 +211,18 @@ input[type=text]:focus { outline: 2px solid #4a90d9; border-color: transparent; 
     <div class="fleet-lines" id="fleetLines"></div>
     <button class="add-line-btn" id="addLineBtn">+ Add Bus Type</button>
     <div class="table-wrap hidden" id="budgetResult" style="margin-top:24px"></div>
+  </div>
+
+  <div class="card hidden" id="uncountedCard">
+    <div class="toolbar" style="margin-bottom:0">
+      <h2>Uncounted Spend</h2>
+      <div class="btns">
+        <button class="btn secondary small" id="exportUncHtml">Download HTML</button>
+        <button class="btn secondary small" id="exportUncXlsx">Download Excel</button>
+      </div>
+    </div>
+    <p class="subtitle">Spend in the file that is <strong>not</strong> in the averages above, and why. Use it to spot PL codes missing from a category, or buses missing from the fleet file.</p>
+    <div id="uncountedContent"></div>
   </div>
 
 </div>
@@ -318,6 +343,17 @@ function processSpend(spendRows, fleetMap) {
 
   const busData = {}, depotBusData = {};
   let matched = 0, skippedNoFleet = 0, skippedNoGroup = 0;
+  // Uncounted spend, by reason
+  let countedValue = 0, unreadable = 0;
+  const unmapped = new Map();   // PL code -> { lines, value, buses:Set }  (bus known, code not in a category)
+  const unknownFleet = new Map(); // fleet no. -> { lines, value }        (not in fleet file)
+  const noFleet = new Map();    // PL code -> { lines, value }            (no fleet number on the line)
+  const bump = (map, key, value) => {
+    let e = map.get(key);
+    if (!e) { e = { lines: 0, value: 0 }; map.set(key, e); }
+    e.lines++; e.value += value;
+    return e;
+  };
 
   for (let i = 1; i < spendRows.length; i++) {
     const row = spendRows[i];
@@ -325,15 +361,21 @@ function processSpend(spendRows, fleetMap) {
     const plCode   = parseInt(row[plIdx],  10);
     const value    = parseFloat(row[valIdx]);
 
-    if (!fleetNum || isNaN(plCode) || isNaN(value)) { skippedNoFleet++; continue; }
+    if (isNaN(plCode) || isNaN(value)) { skippedNoFleet++; unreadable++; continue; }
+    if (!fleetNum) { skippedNoFleet++; bump(noFleet, plCode, value); continue; }
 
     const entry   = fleetMap.get(fleetNum);
     const busType = entry ? entry.busType : undefined;
     const depot   = entry ? entry.depot   : '';
     const group   = CODE_TO_GROUP[plCode];
 
-    if (!busType) { skippedNoGroup++; continue; }
-    if (!group)   { continue; }
+    if (!busType) { skippedNoGroup++; bump(unknownFleet, fleetNum, value); continue; }
+    if (!group)   {
+      const e = bump(unmapped, plCode, value);
+      (e.buses = e.buses || new Set()).add(fleetNum);
+      continue;
+    }
+    countedValue += value;
 
     if (!busData[busType])           busData[busType] = {};
     if (!busData[busType][fleetNum]) busData[busType][fleetNum] = {};
@@ -376,7 +418,20 @@ function processSpend(spendRows, fleetMap) {
     }
   }
 
-  return { averages, matched, skippedNoFleet, skippedNoGroup };
+  const byValue = (a, b) => Math.abs(b.value) - Math.abs(a.value);
+  const sum = arr => arr.reduce((s, e) => ({ lines: s.lines + e.lines, value: s.value + e.value }), { lines: 0, value: 0 });
+  const unmappedList = [...unmapped.entries()].map(([code, e]) => ({ code, lines: e.lines, value: e.value, buses: e.buses.size })).sort(byValue);
+  const unknownList  = [...unknownFleet.entries()].map(([fleet, e]) => ({ fleet, lines: e.lines, value: e.value })).sort(byValue);
+  const noFleetList  = [...noFleet.entries()].map(([code, e]) => ({ code, lines: e.lines, value: e.value, group: CODE_TO_GROUP[code] || '' })).sort(byValue);
+  const uncounted = {
+    counted:      { lines: matched, value: countedValue },
+    unmapped:     { ...sum(unmappedList), items: unmappedList },
+    unknownFleet: { ...sum(unknownList), count: unknownList.length, items: unknownList.slice(0, 200) },
+    noFleet:      { ...sum(noFleetList), items: noFleetList },
+    unreadable,
+  };
+
+  return { averages, matched, skippedNoFleet, skippedNoGroup, uncounted };
 }
 </script>
 <script>
@@ -750,6 +805,7 @@ function saveReportWithData() {
     subtitle: document.getElementById('summarySubtitle').textContent,
     averages: _averages,
     depotNames: [..._depotNames.entries()],
+    uncounted: _uncounted,
     plan: { name: document.getElementById('planName').value, basis: budgetBasis(), lines: getBudgetLines() },
   };
   const clone = _pristineDoc.cloneNode(true);
@@ -767,6 +823,155 @@ function saveReportWithData() {
 }
 
 let _reportMeta = {};
+let _uncounted = null;
+
+// Shared description of the uncounted report, used for the page, HTML and Excel.
+function uncountedSections(u) {
+  return [
+    {
+      key: 'unmapped',
+      title: 'PL codes not in any spend category',
+      why: 'The bus is in the fleet file, but its PL code is not listed in any category. If any of these should be counted, add them to a category.',
+      head: ['PL Code', 'Lines', 'Buses', 'Value'],
+      rows: u.unmapped.items.map(e => [String(e.code), e.lines, e.buses, e.value]),
+      money: [3], total: u.unmapped,
+    },
+    {
+      key: 'unknownFleet',
+      title: 'Fleet numbers not in the fleet file',
+      why: 'The spend line has a fleet number, but that number is not in the fleet file, so the bus type is unknown. Check the fleet file is complete and uses the same number format.'
+        + (u.unknownFleet.count > u.unknownFleet.items.length ? ` Showing the top ${u.unknownFleet.items.length} of ${u.unknownFleet.count.toLocaleString()} by value.` : ''),
+      head: ['Fleet Number', 'Lines', 'Value'],
+      rows: u.unknownFleet.items.map(e => [e.fleet, e.lines, e.value]),
+      money: [2], total: u.unknownFleet,
+    },
+    {
+      key: 'noFleet',
+      title: 'Lines with no fleet number',
+      why: 'These lines have no fleet number, so they cannot be linked to a bus. Spend under a category code here is real category spend that the averages miss.',
+      head: ['PL Code', 'Category', 'Lines', 'Value'],
+      rows: u.noFleet.items.map(e => [String(e.code), e.group || 'Not in a category', e.lines, e.value]),
+      money: [3], total: u.noFleet,
+    },
+  ];
+}
+
+function uncountedTotals(u) {
+  const value = u.unmapped.value + u.unknownFleet.value + u.noFleet.value;
+  const lines = u.unmapped.lines + u.unknownFleet.lines + u.noFleet.lines;
+  const all = u.counted.value + value;
+  const pct = all ? (value / all) * 100 : 0;
+  return { value, lines, all, pct };
+}
+
+function renderUncounted(u) {
+  _uncounted = u;
+  const card = document.getElementById('uncountedCard');
+  if (!u) { card.classList.add('hidden'); return; }
+  const t = uncountedTotals(u);
+  const kpi = (k, v, sub, cls = '') => `<div class="unc-kpi ${cls}"><div class="k">${k}</div><div class="v">${v}</div><div class="s">${sub}</div></div>`;
+  let html = '<div class="unc-kpis">'
+    + kpi('Counted', fmt(u.counted.value), `${u.counted.lines.toLocaleString()} lines`, 'ok')
+    + kpi('Not counted', fmt(t.value), `${t.lines.toLocaleString()} lines · ${t.pct.toFixed(1)}% of value`, t.lines ? 'warn' : 'ok')
+    + kpi('Codes not in a category', fmt(u.unmapped.value), `${u.unmapped.items.length} code${u.unmapped.items.length !== 1 ? 's' : ''}`)
+    + kpi('Not in fleet file', fmt(u.unknownFleet.value), `${u.unknownFleet.count.toLocaleString()} fleet number${u.unknownFleet.count !== 1 ? 's' : ''}`)
+    + kpi('No fleet number', fmt(u.noFleet.value), `${u.noFleet.lines.toLocaleString()} lines`)
+    + '</div>';
+  if (u.unreadable) html += `<p class="subtitle">${u.unreadable.toLocaleString()} line${u.unreadable !== 1 ? 's' : ''} could not be read at all (missing PL code or value) and ${u.unreadable !== 1 ? 'are' : 'is'} not included in any figure here.</p>`;
+
+  for (const sec of uncountedSections(u)) {
+    html += `<details class="unc-section"${sec.key === 'unmapped' && sec.rows.length ? ' open' : ''}><summary>${esc(sec.title)} <span>— ${fmt(sec.total.value)} · ${sec.total.lines.toLocaleString()} lines</span></summary>`;
+    html += `<p class="subtitle" style="margin-bottom:8px">${esc(sec.why)}</p>`;
+    if (!sec.rows.length) { html += '<div class="unc-empty">✓ None</div></details>'; continue; }
+    html += '<div class="table-wrap"><table class="unc-table"><thead><tr>'
+      + sec.head.map((h, i) => `<th style="text-align:${i === 0 || (sec.key === 'noFleet' && i === 1) ? 'left' : 'right'}">${h}</th>`).join('')
+      + '</tr></thead><tbody>'
+      + sec.rows.map(r => '<tr>' + r.map((c, i) => `<td style="text-align:${i === 0 || (sec.key === 'noFleet' && i === 1) ? 'left' : 'right'}">${sec.money.includes(i) ? fmt(c) : esc(typeof c === 'number' ? c.toLocaleString() : c)}</td>`).join('') + '</tr>').join('')
+      + '</tbody></table></div></details>';
+  }
+  document.getElementById('uncountedContent').innerHTML = html;
+  card.classList.remove('hidden');
+}
+
+function exportUncountedHtml() {
+  const u = _uncounted; if (!u) return;
+  const t = uncountedTotals(u);
+  const created = new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
+  const secs = uncountedSections(u).map(sec => {
+    const left = i => i === 0 || (sec.key === 'noFleet' && i === 1);
+    const body = sec.rows.length
+      ? `<table><thead><tr>${sec.head.map((h, i) => `<th${left(i) ? ' class="l"' : ''}>${h}</th>`).join('')}</tr></thead><tbody>`
+        + sec.rows.map(r => '<tr>' + r.map((c, i) => `<td${left(i) ? ' class="l"' : ''}>${sec.money.includes(i) ? fmt(c) : esc(typeof c === 'number' ? c.toLocaleString() : c)}</td>`).join('') + '</tr>').join('')
+        + '</tbody></table>'
+      : '<p class="ok">✓ None</p>';
+    return `<div class="card"><h2>${esc(sec.title)} — ${fmt(sec.total.value)} · ${sec.total.lines.toLocaleString()} lines</h2><p class="why">${esc(sec.why)}</p><div class="wrap">${body}</div></div>`;
+  }).join('');
+  const doc = `<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Uncounted Spend</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f0f2f5;color:#1a1a2e;padding:24px 16px}
+.page{max-width:1000px;margin:0 auto}
+.header{background:#1a1a2e;color:#fff;padding:20px 24px;border-radius:10px;border-bottom:3px solid #4a90d9;margin-bottom:20px}
+.header h1{font-size:1.4rem}.header p{font-size:.8rem;color:#8892b0;margin-top:4px}
+.card{background:#fff;padding:20px 24px;margin-bottom:20px;border-radius:10px;box-shadow:0 1px 4px rgba(0,0,0,.08)}
+.kpi{display:flex;gap:32px;flex-wrap:wrap}
+.kpi div{font-size:.72rem;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.05em}
+.kpi strong{display:block;font-size:1.4rem;color:#1a1a2e;letter-spacing:0;text-transform:none}
+h2{font-size:.9rem;margin-bottom:6px}
+.why{font-size:.78rem;color:#6b7280;margin-bottom:10px}
+.ok{color:#059669;font-size:.85rem}
+.wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:.83rem}
+th{background:#1a1a2e;color:#fff;padding:8px 12px;text-align:right;white-space:nowrap}
+td{padding:7px 12px;border-bottom:1px solid #f0f2f5;text-align:right;white-space:nowrap}
+.l{text-align:left}
+@media print{body{background:#fff;padding:0}th{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+</style></head><body><div class="page">
+<div class="header"><h1>Uncounted Spend</h1><p>Created ${created}${sourceLine() ? ' · ' + esc(sourceLine()) : ''}</p></div>
+<div class="card"><div class="kpi">
+<div>Counted<strong>${fmt(u.counted.value)}</strong></div>
+<div>Not counted<strong>${fmt(t.value)}</strong></div>
+<div>Share not counted<strong>${t.pct.toFixed(1)}%</strong></div>
+<div>Lines not counted<strong>${t.lines.toLocaleString()}</strong></div>
+</div>${u.unreadable ? `<p class="why" style="margin:10px 0 0">${u.unreadable.toLocaleString()} unreadable lines (missing PL code or value) are not included.</p>` : ''}</div>
+${secs}
+</div></body></html>`;
+  downloadFile(doc, `Uncounted-Spend-${todayISO()}.html`, 'text/html');
+}
+
+function exportUncountedXlsx() {
+  const u = _uncounted; if (!u) return;
+  if (typeof XLSX === 'undefined') { alert('Excel library not loaded — check your internet connection and reload the page.'); return; }
+  const MONEY = '£#,##0.00';
+  const t = uncountedTotals(u);
+  const wb = XLSX.utils.book_new();
+  const summary = [
+    ['Uncounted Spend'],
+    [`Created ${new Date().toLocaleDateString('en-GB')}` + (sourceLine() ? ' · ' + sourceLine() : '')],
+    [],
+    ['', 'Lines', 'Value'],
+    ['Counted in averages', u.counted.lines, u.counted.value],
+    ['PL codes not in any category', u.unmapped.lines, u.unmapped.value],
+    ['Fleet numbers not in fleet file', u.unknownFleet.lines, u.unknownFleet.value],
+    ['Lines with no fleet number', u.noFleet.lines, u.noFleet.value],
+    ['Total not counted', t.lines, t.value],
+    ['Unreadable lines (not valued)', u.unreadable, ''],
+  ];
+  const ws = XLSX.utils.aoa_to_sheet(summary);
+  for (let r = 4; r <= 8; r++) { const c = ws[XLSX.utils.encode_cell({ r, c: 2 })]; if (c) c.z = MONEY; }
+  ws['!cols'] = [{ wch: 34 }, { wch: 10 }, { wch: 18 }];
+  XLSX.utils.book_append_sheet(wb, ws, 'Summary');
+  const names = { unmapped: 'Codes not in category', unknownFleet: 'Not in fleet file', noFleet: 'No fleet number' };
+  for (const sec of uncountedSections(u)) {
+    const sh = XLSX.utils.aoa_to_sheet([sec.head, ...sec.rows]);
+    for (let r = 1; r <= sec.rows.length; r++) for (const c of sec.money) { const cell = sh[XLSX.utils.encode_cell({ r, c })]; if (cell) cell.z = MONEY; }
+    sh['!cols'] = sec.head.map((h, i) => ({ wch: i === 1 && sec.key === 'noFleet' ? 26 : 16 }));
+    XLSX.utils.book_append_sheet(wb, sh, names[sec.key]);
+  }
+  XLSX.writeFile(wb, `Uncounted-Spend-${todayISO()}.xlsx`);
+}
 
 function showReport(averages, depotNames, subtitle, planLines, planBasis) {
   _averages = averages;
@@ -852,7 +1057,7 @@ document.getElementById('processBtn').addEventListener('click', async () => {
     const fleetRows = fleetResult.rows;
     setStatus('Processing…', 'loading');
     const { map: fleetMap, depotNames } = buildFleetMap(fleetRows);
-    const { averages, matched, skippedNoFleet, skippedNoGroup } = processSpend(spendRows, fleetMap);
+    const { averages, matched, skippedNoFleet, skippedNoGroup, uncounted } = processSpend(spendRows, fleetMap);
     _reportMeta = { generated: new Date().toISOString(), spendFile: _spendFile.name, fleetFile: _fleetFile.name };
 
     renderDiagnostics(spendResult, fleetResult, spendRows, { matched, skippedNoFleet, skippedNoGroup });
@@ -860,6 +1065,7 @@ document.getElementById('processBtn').addEventListener('click', async () => {
     const typeCount = Object.keys(averages).length;
     const subtitle = `${typeCount} bus type${typeCount !== 1 ? 's' : ''} · ${fleetMap.size.toLocaleString()} vehicles in fleet file · ${matched.toLocaleString()} spend lines matched`;
     showReport(averages, depotNames, subtitle);
+    renderUncounted(uncounted);
     document.getElementById('summaryCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
 
     const warn = skippedNoGroup > 0 ? ` (${skippedNoGroup.toLocaleString()} fleet numbers not in fleet file — check both files match)` : '';
@@ -875,6 +1081,8 @@ document.getElementById('processBtn').addEventListener('click', async () => {
 
 document.getElementById('addLineBtn').addEventListener('click', () => addFleetLine());
 document.getElementById('exportBudgetHtml').addEventListener('click', exportBudgetHtml);
+document.getElementById('exportUncHtml').addEventListener('click', exportUncountedHtml);
+document.getElementById('exportUncXlsx').addEventListener('click', exportUncountedXlsx);
 document.getElementById('budgetBasis').addEventListener('change', () => { refreshLineOptions(); renderFleetBudget(); });
 document.getElementById('exportBudgetXlsx').addEventListener('click', exportBudgetXlsx);
 document.getElementById('saveReportBtn').addEventListener('click', saveReportWithData);
@@ -965,6 +1173,7 @@ function renderDiagnostics(spendResult, fleetResult, spendRows, stats) {
     _reportMeta = d.meta || {};
     if (d.plan && d.plan.name) document.getElementById('planName').value = d.plan.name;
     showReport(d.averages, new Map(d.depotNames || []), d.subtitle || '', d.plan && d.plan.lines, d.plan && d.plan.basis);
+    renderUncounted(d.uncounted || null);
     document.getElementById('uploadCard').classList.add('hidden');
     const info = sourceLine();
     document.getElementById('embedInfo').textContent =
