@@ -103,9 +103,18 @@ details.diag[open] summary { border-bottom: 1px solid #e2e8f0; border-radius: 6p
 .remove-btn:hover { border-color: #dc2626; color: #dc2626; background: #fff5f5; }
 .add-line-btn { background: none; border: 1px dashed #c8d0e0; color: #4a90d9; border-radius: 6px; padding: 8px 16px; font-size: 0.85rem; font-weight: 600; cursor: pointer; transition: all 0.2s; }
 .add-line-btn:hover { border-color: #4a90d9; background: #f5f9ff; }
+.budget-table td:nth-child(2) { text-align: right; color: inherit; }
 .budget-table td.total-col { font-weight: 700; background: #f8fafc; }
 .budget-table tr.total-row td { background: #1a1a2e; color: white; font-weight: 700; }
 .budget-table tr.total-row td.total-col { background: #111827; }
+
+input[type=text] { padding: 9px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 0.88rem; min-width: 260px; background: white; color: #1a1a2e; }
+input[type=text]:focus { outline: 2px solid #4a90d9; border-color: transparent; }
+.toolbar { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+.toolbar .btns { display: flex; gap: 8px; flex-wrap: wrap; }
+.btn.small { padding: 8px 16px; font-size: 0.82rem; }
+.embed-banner { background: #eef4ff; border: 1px solid #c7dbf7; border-radius: 10px; padding: 14px 18px; margin-bottom: 24px; font-size: 0.85rem; color: #1e3a5f; display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+.link-btn { background: none; border: none; color: #4a90d9; font-weight: 600; font-size: 0.85rem; cursor: pointer; text-decoration: underline; padding: 0; }
 </style>
 <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
 </head>
@@ -116,7 +125,12 @@ details.diag[open] summary { border-bottom: 1px solid #e2e8f0; border-radius: 6p
 </div>
 <div class="main">
 
-  <div class="card">
+  <div class="embed-banner hidden" id="embedBanner">
+    <span id="embedInfo"></span>
+    <button class="link-btn" id="loadNewBtn">Load new data files</button>
+  </div>
+
+  <div class="card" id="uploadCard">
     <h2>Upload Data</h2>
     <div class="upload-grid">
       <div class="upload-box" id="spendBox">
@@ -148,7 +162,10 @@ details.diag[open] summary { border-bottom: 1px solid #e2e8f0; border-radius: 6p
   </div>
 
   <div class="card hidden" id="summaryCard">
-    <h2>Average Annual Spend Per Bus</h2>
+    <div class="toolbar" style="margin-bottom:0">
+      <h2>Average Annual Spend Per Bus</h2>
+      <button class="btn secondary small" id="saveReportBtn" title="Download a copy of this page with the processed data built in — opens ready to use, no uploads needed">Save Report with Data (HTML)</button>
+    </div>
     <p class="subtitle" id="summarySubtitle"></p>
     <div class="depot-bar hidden" id="depotBar">
       <label class="depot-label" for="depotFilter">Depot filter:</label>
@@ -160,6 +177,16 @@ details.diag[open] summary { border-bottom: 1px solid #e2e8f0; border-radius: 6p
   <div class="card hidden" id="budgetCard">
     <h2>Budget Calculator</h2>
     <p class="subtitle">Add bus types and quantities to project your full fleet budget. Results update automatically.</p>
+    <div class="toolbar">
+      <div class="field">
+        <label for="planName">Plan name (optional)</label>
+        <input type="text" id="planName" placeholder="e.g. Depot X 2027 budget">
+      </div>
+      <div class="btns">
+        <button class="btn secondary small" id="exportBudgetHtml" disabled>Download HTML</button>
+        <button class="btn secondary small" id="exportBudgetXlsx" disabled>Download Excel</button>
+      </div>
+    </div>
     <div class="fleet-lines" id="fleetLines"></div>
     <button class="add-line-btn" id="addLineBtn">+ Add Bus Type</button>
     <div class="table-wrap hidden" id="budgetResult" style="margin-top:24px"></div>
@@ -345,6 +372,23 @@ function processSpend(spendRows, fleetMap) {
 }
 </script>
 <script>
+// Untouched copy of this page, captured before any rendering, used for "Save Report with Data".
+const _pristineDoc = document.documentElement.cloneNode(true);
+
+const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+const todayISO = () => new Date().toISOString().slice(0, 10);
+const slug = s => String(s).trim().replace(/[^A-Za-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60);
+
+function downloadFile(content, filename, type) {
+  const blob = new Blob([content], { type });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+}
+
 const fmt = v => {
   const abs = Math.abs(v).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   return (v < 0 ? '-' : '') + '£' + abs;
@@ -362,13 +406,13 @@ function renderTable(averages, selectedDepot = '') {
 
   for (const t of types) {
     const d = averages[t];
-    html += `<tr><td>${t}</td><td>${d._count}</td>`
+    html += `<tr><td>${esc(t)}</td><td>${d._count}</td>`
       + GROUP_NAMES.map(g => `<td>${fmt(d[g])}</td>`).join('')
       + `<td><strong>${fmt(d._total)}</strong></td></tr>`;
 
     if (selectedDepot && d._depots[selectedDepot]) {
       const dd = d._depots[selectedDepot];
-      html += `<tr class="depot-row"><td>${t} <em style="font-size:0.74rem;color:#6b7280">— ${depotName}</em></td><td>${dd._count}</td>`
+      html += `<tr class="depot-row"><td>${esc(t)} <em style="font-size:0.74rem;color:#6b7280">— ${esc(depotName)}</em></td><td>${dd._count}</td>`
         + GROUP_NAMES.map(g => `<td>${fmt(dd[g])}</td>`).join('')
         + `<td><strong>${fmt(dd._total)}</strong></td></tr>`;
     }
@@ -389,7 +433,7 @@ function renderTable(averages, selectedDepot = '') {
       const dGroup = GROUP_NAMES.map(g =>
         dTypes.reduce((s, t) => s + averages[t]._depots[selectedDepot][g] * averages[t]._depots[selectedDepot]._count, 0) / dBuses);
       const dTotal = dGroup.reduce((s, v) => s + v, 0);
-      html += `<tr class="grand-row depot-row"><td>${depotName} Average</td><td>${dBuses}</td>`
+      html += `<tr class="grand-row depot-row"><td>${esc(depotName)} Average</td><td>${dBuses}</td>`
         + dGroup.map(v => `<td>${fmt(v)}</td>`).join('')
         + `<td><strong>${fmt(dTotal)}</strong></td></tr>`;
     }
@@ -415,15 +459,16 @@ function makeSelect() {
   return sel;
 }
 
-function addFleetLine() {
+function addFleetLine(busType, count) {
   const id = ++_lineId;
   const line = document.createElement('div');
   line.className = 'fleet-line';
   line.dataset.lineId = id;
 
   const sel = makeSelect();
+  if (busType && _averages && _averages[busType]) sel.value = busType;
   const countInput = document.createElement('input');
-  countInput.type = 'number'; countInput.min = 1; countInput.max = 9999; countInput.value = 1;
+  countInput.type = 'number'; countInput.min = 1; countInput.max = 9999; countInput.value = count || 1;
   countInput.addEventListener('input', renderFleetBudget);
 
   const label = document.createElement('span');
@@ -438,40 +483,266 @@ function addFleetLine() {
   renderFleetBudget();
 }
 
-function renderFleetBudget() {
-  if (!_averages) return;
-  const lines = [...document.querySelectorAll('#fleetLines .fleet-line')].map(line => ({
+function getBudgetLines() {
+  if (!_averages) return [];
+  return [...document.querySelectorAll('#fleetLines .fleet-line')].map(line => ({
     busType: line.querySelector('select').value,
     count:   Math.max(1, parseInt(line.querySelector('input').value, 10) || 1),
   })).filter(l => l.busType && _averages[l.busType]);
+}
 
+// One calculation shared by the on-screen table and both exports.
+function computeBudget(lines) {
+  const rows = GROUP_NAMES.map(g => {
+    const values = lines.map(l => _averages[l.busType][g] * l.count);
+    return { group: g, values, total: values.reduce((s, v) => s + v, 0) };
+  });
+  const lineTotals = lines.map(l => _averages[l.busType]._total * l.count);
+  const grandTotal = lineTotals.reduce((s, v) => s + v, 0);
+  const totalBuses = lines.reduce((s, l) => s + l.count, 0);
+  return { lines, rows, lineTotals, grandTotal, totalBuses };
+}
+
+function renderFleetBudget() {
+  if (!_averages) return;
+  const lines = getBudgetLines();
   const result = document.getElementById('budgetResult');
-  if (lines.length === 0) { result.classList.add('hidden'); return; }
+  const hasLines = lines.length > 0;
+  document.getElementById('exportBudgetHtml').disabled = !hasLines;
+  document.getElementById('exportBudgetXlsx').disabled = !hasLines;
+  if (!hasLines) { result.classList.add('hidden'); return; }
 
+  const b = computeBudget(lines);
   let html = '<table class="budget-table" style="width:100%;border-collapse:collapse;font-size:0.83rem"><thead><tr>'
     + '<th style="text-align:left;padding:9px 14px;background:#1a1a2e;color:white;white-space:nowrap">Spend Category</th>';
   for (const l of lines) {
-    html += `<th style="padding:9px 14px;background:#1a1a2e;color:white;text-align:right;white-space:nowrap">${l.busType}<br><span style="font-weight:400;font-size:0.7rem;color:#8892b0">&times; ${l.count} bus${l.count !== 1 ? 'es' : ''}</span></th>`;
+    html += `<th style="padding:9px 14px;background:#1a1a2e;color:white;text-align:right;white-space:nowrap">${esc(l.busType)}<br><span style="font-weight:400;font-size:0.7rem;color:#8892b0">&times; ${l.count} bus${l.count !== 1 ? 'es' : ''}</span></th>`;
   }
   html += '<th style="padding:9px 14px;background:#0f172a;color:white;text-align:right;white-space:nowrap">Fleet Total</th></tr></thead><tbody>';
 
-  for (const g of GROUP_NAMES) {
-    const fleetTotal = lines.reduce((s, l) => s + _averages[l.busType][g] * l.count, 0);
-    html += `<tr><td style="padding:9px 14px;border-bottom:1px solid #f0f2f5;font-weight:500">${g}</td>`;
-    for (const l of lines) html += `<td style="padding:9px 14px;border-bottom:1px solid #f0f2f5;text-align:right">${fmt(_averages[l.busType][g] * l.count)}</td>`;
-    html += `<td class="total-col" style="padding:9px 14px;border-bottom:1px solid #f0f2f5;text-align:right">${fmt(fleetTotal)}</td></tr>`;
+  for (const r of b.rows) {
+    html += `<tr><td style="padding:9px 14px;border-bottom:1px solid #f0f2f5;font-weight:500">${esc(r.group)}</td>`;
+    for (const v of r.values) html += `<td style="padding:9px 14px;border-bottom:1px solid #f0f2f5;text-align:right">${fmt(v)}</td>`;
+    html += `<td class="total-col" style="padding:9px 14px;border-bottom:1px solid #f0f2f5;text-align:right">${fmt(r.total)}</td></tr>`;
   }
 
   html += '<tr class="total-row"><td style="padding:10px 14px">Total</td>';
-  for (const l of lines) {
-    html += `<td style="padding:10px 14px;text-align:right">${fmt(_averages[l.busType]._total * l.count)}</td>`;
-  }
-  const grandTotal = lines.reduce((s, l) => s + _averages[l.busType]._total * l.count, 0);
-  html += `<td class="total-col" style="padding:10px 14px;text-align:right">${fmt(grandTotal)}</td></tr>`;
+  for (const v of b.lineTotals) html += `<td style="padding:10px 14px;text-align:right">${fmt(v)}</td>`;
+  html += `<td class="total-col" style="padding:10px 14px;text-align:right">${fmt(b.grandTotal)}</td></tr>`;
   html += '</tbody></table>';
 
   result.innerHTML = html;
   result.classList.remove('hidden');
+}
+
+function planTitle() {
+  return document.getElementById('planName').value.trim() || 'Fleet Budget';
+}
+
+function sourceLine() {
+  const m = _reportMeta;
+  const parts = [];
+  if (m.generated) parts.push(`Averages generated ${new Date(m.generated).toLocaleDateString('en-GB')}`);
+  if (m.spendFile) parts.push(`spend file: ${m.spendFile}`);
+  if (m.fleetFile) parts.push(`fleet file: ${m.fleetFile}`);
+  return parts.join(' · ');
+}
+
+function exportBudgetHtml() {
+  const lines = getBudgetLines();
+  if (!lines.length) return;
+  const b = computeBudget(lines);
+  const title = planTitle();
+  const created = new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
+
+  const fleetRows = lines.map((l, i) =>
+    `<tr><td>${esc(l.busType)}</td><td class="c">${l.count}</td><td>${fmt(_averages[l.busType]._total)}</td><td>${fmt(b.lineTotals[i])}</td></tr>`).join('');
+
+  const head = lines.map(l => `<th>${esc(l.busType)}<span>&times; ${l.count} bus${l.count !== 1 ? 'es' : ''}</span></th>`).join('');
+  const body = b.rows.map(r =>
+    `<tr><td>${esc(r.group)}</td>${r.values.map(v => `<td>${fmt(v)}</td>`).join('')}<td class="tc">${fmt(r.total)}</td></tr>`).join('');
+  const totals = `<tr class="tot"><td>Total</td>${b.lineTotals.map(v => `<td>${fmt(v)}</td>`).join('')}<td class="tc">${fmt(b.grandTotal)}</td></tr>`;
+
+  const doc = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>${esc(title)}</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f0f2f5;color:#1a1a2e;padding:24px 16px}
+.page{max-width:1100px;margin:0 auto}
+.header{background:#1a1a2e;color:#fff;padding:20px 24px;border-radius:10px 10px 0 0;border-bottom:3px solid #4a90d9}
+.header h1{font-size:1.4rem}
+.header p{font-size:.8rem;color:#8892b0;margin-top:4px}
+.card{background:#fff;padding:20px 24px;margin-bottom:20px;border-radius:0 0 10px 10px;box-shadow:0 1px 4px rgba(0,0,0,.08)}
+.card+.card{border-radius:10px}
+.kpi{display:flex;gap:32px;flex-wrap:wrap;margin-bottom:6px}
+.kpi div{font-size:.72rem;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.05em}
+.kpi strong{display:block;font-size:1.6rem;color:#1a1a2e;letter-spacing:0;text-transform:none}
+h2{font-size:.85rem;text-transform:uppercase;letter-spacing:.05em;margin-bottom:12px}
+.wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:.83rem}
+th{background:#1a1a2e;color:#fff;padding:9px 12px;text-align:right;white-space:nowrap}
+th span{display:block;font-weight:400;font-size:.7rem;color:#8892b0}
+th:first-child,td:first-child{text-align:left}
+td{padding:8px 12px;border-bottom:1px solid #f0f2f5;text-align:right;white-space:nowrap}
+td.c{text-align:center}
+td.tc{font-weight:700;background:#f8fafc}
+tr.tot td{background:#1a1a2e;color:#fff;font-weight:700}
+tr.tot td.tc{background:#111827}
+.foot{font-size:.74rem;color:#6b7280;margin-top:8px}
+@media print{body{background:#fff;padding:0}.card,.header{box-shadow:none}th,tr.tot td{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="header"><h1>${esc(title)}</h1><p>Created ${created}${sourceLine() ? ' · ' + esc(sourceLine()) : ''}</p></div>
+  <div class="card">
+    <div class="kpi">
+      <div>Total Budget<strong>${fmt(b.grandTotal)}</strong></div>
+      <div>Buses<strong>${b.totalBuses}</strong></div>
+      <div>Average per Bus<strong>${fmt(b.grandTotal / b.totalBuses)}</strong></div>
+    </div>
+  </div>
+  <div class="card">
+    <h2>Fleet</h2>
+    <div class="wrap"><table>
+      <thead><tr><th>Bus Type</th><th style="text-align:center">Buses</th><th>Average per Bus</th><th>Budget</th></tr></thead>
+      <tbody>${fleetRows}<tr class="tot"><td>Total</td><td class="c">${b.totalBuses}</td><td></td><td class="tc">${fmt(b.grandTotal)}</td></tr></tbody>
+    </table></div>
+  </div>
+  <div class="card">
+    <h2>Budget by Spend Category</h2>
+    <div class="wrap"><table>
+      <thead><tr><th>Spend Category</th>${head}<th>Fleet Total</th></tr></thead>
+      <tbody>${body}${totals}</tbody>
+    </table></div>
+    <p class="foot">Budgets are average annual spend per bus for each bus type, multiplied by the number of buses.</p>
+  </div>
+</div>
+</body>
+</html>`;
+  downloadFile(doc, `${slug(title) || 'Fleet-Budget'}-${todayISO()}.html`, 'text/html');
+}
+
+function exportBudgetXlsx() {
+  const lines = getBudgetLines();
+  if (!lines.length) return;
+  if (typeof XLSX === 'undefined') { alert('Excel library not loaded — check your internet connection and reload the page.'); return; }
+  const b = computeBudget(lines);
+  const title = planTitle();
+  const MONEY = '£#,##0.00';
+
+  // Sheet 1: budget by category
+  const aoa = [
+    [title],
+    [`Created ${new Date().toLocaleDateString('en-GB')}` + (sourceLine() ? ' · ' + sourceLine() : '')],
+    [],
+    ['Spend Category', ...lines.map(l => `${l.busType} × ${l.count}`), 'Fleet Total'],
+    ...b.rows.map(r => [r.group, ...r.values, r.total]),
+    ['Total', ...b.lineTotals, b.grandTotal],
+  ];
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  const firstDataRow = 4, lastRow = aoa.length - 1;
+  for (let r = firstDataRow; r <= lastRow; r++) {
+    for (let c = 1; c <= lines.length + 1; c++) {
+      const cell = ws[XLSX.utils.encode_cell({ r, c })];
+      if (cell && cell.t === 'n') cell.z = MONEY;
+    }
+  }
+  ws['!cols'] = [{ wch: 26 }, ...lines.map(l => ({ wch: Math.max(16, l.busType.length + 6) })), { wch: 16 }];
+
+  // Sheet 2: fleet lines
+  const aoa2 = [
+    ['Bus Type', 'Buses', 'Buses in Sample', 'Average per Bus', 'Budget'],
+    ...lines.map((l, i) => [l.busType, l.count, _averages[l.busType]._count, _averages[l.busType]._total, b.lineTotals[i]]),
+    ['Total', b.totalBuses, '', '', b.grandTotal],
+  ];
+  const ws2 = XLSX.utils.aoa_to_sheet(aoa2);
+  for (let r = 1; r < aoa2.length; r++) {
+    for (const c of [3, 4]) {
+      const cell = ws2[XLSX.utils.encode_cell({ r, c })];
+      if (cell && cell.t === 'n') cell.z = MONEY;
+    }
+  }
+  ws2['!cols'] = [{ wch: 30 }, { wch: 8 }, { wch: 16 }, { wch: 16 }, { wch: 16 }];
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Budget by Category');
+  XLSX.utils.book_append_sheet(wb, ws2, 'Fleet');
+  XLSX.writeFile(wb, `${slug(title) || 'Fleet-Budget'}-${todayISO()}.xlsx`);
+}
+
+// Saves a copy of this whole page with the processed averages embedded, so it opens ready to use.
+function saveReportWithData() {
+  if (!_averages) return;
+  const payload = {
+    version: 1,
+    meta: _reportMeta,
+    subtitle: document.getElementById('summarySubtitle').textContent,
+    averages: _averages,
+    depotNames: [..._depotNames.entries()],
+    plan: { name: document.getElementById('planName').value, lines: getBudgetLines() },
+  };
+  const clone = _pristineDoc.cloneNode(true);
+  const old = clone.querySelector('#embeddedData');
+  if (old) old.remove();
+  const tag = document.createElement('script');
+  tag.type = 'application/json';
+  tag.id = 'embeddedData';
+  // Escape "<" so the data can never close the script tag early.
+  tag.textContent = JSON.stringify(payload).replace(/</g, '\\u003c');
+  clone.querySelector('head').appendChild(tag);
+  const html = '<!DOCTYPE html>\n' + clone.outerHTML;
+  const name = slug(payload.plan.name) ? `${slug(payload.plan.name)}-report` : 'bus-spend-report-with-data';
+  downloadFile(html, `${name}-${todayISO()}.html`, 'text/html');
+}
+
+let _reportMeta = {};
+
+function showReport(averages, depotNames, subtitle, planLines) {
+  _averages = averages;
+  _depotNames = depotNames;
+  document.getElementById('summarySubtitle').textContent = subtitle;
+
+  const depotSel = document.getElementById('depotFilter');
+  depotSel.innerHTML = '<option value="">All Depots</option>';
+  [...depotNames.entries()].sort((a, b) => a[1].localeCompare(b[1])).forEach(([code, name]) => {
+    const o = document.createElement('option'); o.value = code; o.textContent = name;
+    depotSel.appendChild(o);
+  });
+  document.getElementById('depotBar').classList.remove('hidden');
+  if (depotNames.size > 0) {
+    depotSel.disabled = false;
+  } else {
+    depotSel.innerHTML = '<option value="">No Depot column in fleet file — re-export with all columns to enable</option>';
+    depotSel.disabled = true;
+  }
+
+  renderTable(averages, '');
+  if (planLines && planLines.length) {
+    document.getElementById('fleetLines').innerHTML = '';
+    planLines.forEach(l => addFleetLine(l.busType, l.count));
+  } else if (document.querySelectorAll('#fleetLines .fleet-line').length === 0) {
+    addFleetLine();
+  } else {
+    document.querySelectorAll('#fleetLines select').forEach(sel => {
+      const cur = sel.value;
+      sel.innerHTML = '';
+      Object.keys(averages).sort().forEach(t => {
+        const o = document.createElement('option');
+        o.value = t; o.textContent = `${t}  (${averages[t]._count} in sample)`;
+        sel.appendChild(o);
+      });
+      if (cur) sel.value = cur;
+    });
+    renderFleetBudget();
+  }
+
+  document.getElementById('summaryCard').classList.remove('hidden');
+  document.getElementById('budgetCard').classList.remove('hidden');
 }
 
 let _averages = null, _depotNames = new Map();
@@ -516,49 +787,13 @@ document.getElementById('processBtn').addEventListener('click', async () => {
     setStatus('Processing…', 'loading');
     const { map: fleetMap, depotNames } = buildFleetMap(fleetRows);
     const { averages, matched, skippedNoFleet, skippedNoGroup } = processSpend(spendRows, fleetMap);
-    _averages = averages;
-    _depotNames = depotNames;
+    _reportMeta = { generated: new Date().toISOString(), spendFile: _spendFile.name, fleetFile: _fleetFile.name };
 
     renderDiagnostics(spendResult, fleetResult, spendRows, { matched, skippedNoFleet, skippedNoGroup });
 
     const typeCount = Object.keys(averages).length;
-    document.getElementById('summarySubtitle').textContent =
-      `${typeCount} bus type${typeCount !== 1 ? 's' : ''} · ${fleetMap.size.toLocaleString()} vehicles in fleet file · ${matched.toLocaleString()} spend lines matched`;
-
-    const depotSel = document.getElementById('depotFilter');
-    depotSel.innerHTML = '<option value="">All Depots</option>';
-    [...depotNames.entries()].sort((a, b) => a[1].localeCompare(b[1])).forEach(([code, name]) => {
-      const o = document.createElement('option'); o.value = code; o.textContent = name;
-      depotSel.appendChild(o);
-    });
-    if (depotNames.size > 0) {
-      document.getElementById('depotBar').classList.remove('hidden');
-      depotSel.disabled = false;
-    } else {
-      document.getElementById('depotBar').classList.remove('hidden');
-      depotSel.innerHTML = '<option value="">No Depot column in fleet file — re-export with all columns to enable</option>';
-      depotSel.disabled = true;
-    }
-
-    renderTable(averages, '');
-    if (document.querySelectorAll('#fleetLines .fleet-line').length === 0) {
-      addFleetLine();
-    } else {
-      document.querySelectorAll('#fleetLines select').forEach(sel => {
-        const cur = sel.value;
-        sel.innerHTML = '';
-        Object.keys(averages).sort().forEach(t => {
-          const o = document.createElement('option');
-          o.value = t; o.textContent = `${t}  (${averages[t]._count} in sample)`;
-          sel.appendChild(o);
-        });
-        if (cur) sel.value = cur;
-      });
-      renderFleetBudget();
-    }
-
-    document.getElementById('summaryCard').classList.remove('hidden');
-    document.getElementById('budgetCard').classList.remove('hidden');
+    const subtitle = `${typeCount} bus type${typeCount !== 1 ? 's' : ''} · ${fleetMap.size.toLocaleString()} vehicles in fleet file · ${matched.toLocaleString()} spend lines matched`;
+    showReport(averages, depotNames, subtitle);
     document.getElementById('summaryCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
 
     const warn = skippedNoGroup > 0 ? ` (${skippedNoGroup.toLocaleString()} fleet numbers not in fleet file — check both files match)` : '';
@@ -572,7 +807,14 @@ document.getElementById('processBtn').addEventListener('click', async () => {
   }
 });
 
-document.getElementById('addLineBtn').addEventListener('click', addFleetLine);
+document.getElementById('addLineBtn').addEventListener('click', () => addFleetLine());
+document.getElementById('exportBudgetHtml').addEventListener('click', exportBudgetHtml);
+document.getElementById('exportBudgetXlsx').addEventListener('click', exportBudgetXlsx);
+document.getElementById('saveReportBtn').addEventListener('click', saveReportWithData);
+document.getElementById('loadNewBtn').addEventListener('click', () => {
+  document.getElementById('uploadCard').classList.remove('hidden');
+  document.getElementById('uploadCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
+});
 document.getElementById('depotFilter').addEventListener('change', () => {
   if (_averages) renderTable(_averages, document.getElementById('depotFilter').value);
 });
@@ -646,6 +888,26 @@ function renderDiagnostics(spendResult, fleetResult, spendRows, stats) {
   document.getElementById('diagContent').innerHTML = html;
   document.getElementById('diagCard').classList.remove('hidden');
 }
+
+// If this copy was saved with data, show the report straight away.
+(function loadEmbeddedData() {
+  const el = document.getElementById('embeddedData');
+  if (!el) return;
+  try {
+    const d = JSON.parse(el.textContent);
+    _reportMeta = d.meta || {};
+    if (d.plan && d.plan.name) document.getElementById('planName').value = d.plan.name;
+    showReport(d.averages, new Map(d.depotNames || []), d.subtitle || '', d.plan && d.plan.lines);
+    document.getElementById('uploadCard').classList.add('hidden');
+    const info = sourceLine();
+    document.getElementById('embedInfo').textContent =
+      'This report has its data built in.' + (info ? ' ' + info + '.' : '');
+    document.getElementById('embedBanner').classList.remove('hidden');
+  } catch (err) {
+    console.error(err);
+    setStatus('Could not read the data saved in this file: ' + err.message, 'error');
+  }
+})();
 </script>
 </body>
 </html>
